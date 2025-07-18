@@ -3,6 +3,7 @@ import pandas as pd
 import sys
 from pathlib import Path
 import plotly.graph_objects as go
+import logging
 
 # Add the modules directory to the Python path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'modules'))
@@ -13,6 +14,7 @@ from modules.utils import load_config, setup_logging
 # Load configuration and setup logging
 CONFIG = load_config()
 setup_logging(CONFIG)
+logger = logging.getLogger(__name__)
 
 st.set_page_config(layout="wide", page_title="Dashboard")
 
@@ -40,7 +42,7 @@ st.markdown("View scan results and metrics for the current project.")
 
 # --- Data Processing Functions ---
 def process_scan_results(all_results: dict, vuln_state: dict = None) -> dict:
-    """Process raw scan results into structured summary data."""
+    """Process raw scan results into structured summary data, deduplicating where necessary."""
     summary = {
         "metrics": {
             "subdomains": 0,
@@ -69,6 +71,16 @@ def process_scan_results(all_results: dict, vuln_state: dict = None) -> dict:
                 }
 
             if isinstance(results, pd.DataFrame):
+                # Deduplicate DataFrames based on key columns
+                if scan_type == "js_files" and 'URL' in results.columns:
+                    results = results.drop_duplicates(subset=['URL'], keep='first')
+                elif scan_type == "js_discovered_endpoints" and 'Endpoint' in results.columns:
+                    results = results.drop_duplicates(subset=['Endpoint'], keep='first')
+                elif scan_type == "live_hosts" and 'URL' in results.columns:
+                    results = results.drop_duplicates(subset=['URL'], keep='first')
+                elif scan_type == "gf_vuln_urls" and 'URL' in results.columns:
+                    results = results.drop_duplicates(subset=['URL'], keep='first')
+
                 count = len(results)
                 
                 if scan_type == "live_hosts":
@@ -101,6 +113,12 @@ def process_scan_results(all_results: dict, vuln_state: dict = None) -> dict:
                 
                 for sub_type, df in results.items():
                     if isinstance(df, pd.DataFrame):
+                        # Deduplicate nested DataFrames
+                        if sub_type == "js_files" and 'URL' in df.columns:
+                            df = df.drop_duplicates(subset=['URL'], keep='first')
+                        elif sub_type == "js_discovered_endpoints" and 'Endpoint' in df.columns:
+                            df = df.drop_duplicates(subset=['Endpoint'], keep='first')
+                        
                         sub_count = len(df)
                         details[sub_type] = sub_count
                         
@@ -119,37 +137,48 @@ def process_scan_results(all_results: dict, vuln_state: dict = None) -> dict:
                     "data": results
                 })
 
-    # Process ongoing vulnerability scan from Scanner page
-    vuln_state = vuln_state or {}
-    if vuln_state.get('status') == 'running':
-        summary["ongoing_scans"].append({
-            "type": "Vulnerability Scan",
-            "progress": vuln_state.get('progress', 0.0),
-            "message": vuln_state.get('message', ''),
-            "target": vuln_state.get('target', 'Unknown')
-        })
-    elif vuln_state.get('status') == 'completed' and vuln_state.get('results') is not None:
-        target = vuln_state.get('target', 'Unknown')
-        results = vuln_state['results']
-        count = len(results)
-        summary["metrics"]["vulnerabilities"] += count
-        summary["target_summary"].setdefault(target, {"vulnerabilities": 0})["vulnerabilities"] = count
-        if 'Severity' in results.columns:
-            severity_counts = results['Severity'].value_counts().to_dict()
-            for severity, count in severity_counts.items():
-                summary["severity_counts"][severity] = summary["severity_counts"].get(severity, 0) + count
-        summary["scan_details"].append({
-            "type": "Vulnerabilities",
-            "target": target,
-            "count": count,
-            "data": results
-        })
+    # Process vulnerability scan state
+    if not isinstance(vuln_state, dict):
+        logger.warning(f"Invalid vuln_state type: expected dict, got {type(vuln_state)}. Skipping vulnerability scan processing.")
+        vuln_state = {}  # Reset to empty dict to prevent errors
+    else:
+        if vuln_state.get('status') == 'running':
+            summary["ongoing_scans"].append({
+                "type": "Vulnerability Scan",
+                "progress": vuln_state.get('progress', 0.0),
+                "message": vuln_state.get('message', ''),
+                "target": vuln_state.get('target', 'Unknown')
+            })
+        elif vuln_state.get('status') == 'completed' and vuln_state.get('results') is not None:
+            target = vuln_state.get('target', 'Unknown')
+            results = vuln_state['results']
+            if isinstance(results, pd.DataFrame) and 'URL' in results.columns:
+                results = results.drop_duplicates(subset=['URL'], keep='first')
+            count = len(results)
+            summary["metrics"]["vulnerabilities"] += count
+            summary["target_summary"].setdefault(target, {"vulnerabilities": 0})["vulnerabilities"] = count
+            if isinstance(results, pd.DataFrame) and 'Severity' in results.columns:
+                severity_counts = results['Severity'].value_counts().to_dict()
+                for severity, count in severity_counts.items():
+                    summary["severity_counts"][severity] = summary["severity_counts"].get(severity, 0) + count
+            summary["scan_details"].append({
+                "type": "Vulnerabilities",
+                "target": target,
+                "count": count,
+                "data": results
+            })
 
     return summary
 
 # --- Main Dashboard Content ---
 all_project_results = project_manager.get_all_results_for_current_project()
 vuln_state = st.session_state.get('scan_status', {})
+
+# Validate and reset scan_status if invalid
+if not isinstance(vuln_state, dict):
+    logger.warning(f"Invalid scan_status in session state: {vuln_state}. Resetting to empty dict.")
+    st.session_state['scan_status'] = {}
+    vuln_state = {}
 
 # Process results (no caching to avoid UnhashableParamError)
 summary = process_scan_results(all_project_results, vuln_state)
@@ -238,9 +267,9 @@ st.markdown("---")
 st.subheader("🔍 Detailed Results")
 
 if not all_project_results and not summary["scan_details"]:
-    st.info("No scan results found for the current project yet. Go to 'Reconnaissance' or 'Vulnerability Scanner' to start scanning!")
+    st.info("No scan results found for the current project yet. Go to 'Reconn' or 'Scanner' to start scanning!")
 else:
-    # Group by scan type for better organization
+    #工夫    # Group by scan type for better organization
     scan_types = {detail["type"] for detail in summary["scan_details"]}
     
     for scan_type in sorted(scan_types):
