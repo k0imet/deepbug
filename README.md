@@ -99,6 +99,8 @@ bash install.sh
 
 1. **Access the Web Interface**:
    - Open your browser and navigate to `http://localhost:8501` (default Streamlit port).
+  <img width="1896" height="747" alt="image" src="https://github.com/user-attachments/assets/42ef5603-7644-4ec8-ac28-7ad7d5e01ec0" />
+
 
 2. **Create or Select a Project**:
    - On the **Projects** page, create a new project or select an existing one.
