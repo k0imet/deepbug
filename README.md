@@ -1,4 +1,4 @@
-# Deepug
+# Deepbug
 
 DeepBug is an automated reconnaissance and bug bounty hunting platform designed to streamline your workflow. It integrates various open-source tools to perform subdomain enumeration, port scanning, JavaScript analysis, vulnerability scanning, and more, all managed within a user-friendly interface.
 ## Get Started:
