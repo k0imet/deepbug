@@ -1,0 +1,30 @@
+{
+  "github.io": {
+    "service": "GitHub Pages",
+    "fingerprint": "There isn't a GitHub Pages site here."
+  },
+  "herokudns.com": {
+    "service": "Heroku",
+    "fingerprint": "No such app"
+  },
+  "bitbucket.io": {
+    "service": "Bitbucket Pages",
+    "fingerprint": "Repository not found"
+  },
+  "cloudfront.net": {
+    "service": "CloudFront",
+    "fingerprint": "ERROR: The request could not be satisfied"
+  },
+  "netlify.app": {
+    "service": "Netlify",
+    "fingerprint": "Page Not Found"
+  },
+  "readthedocs.io": {
+    "service": "ReadTheDocs",
+    "fingerprint": "unknown domain"
+  },
+  "surge.sh": {
+    "service": "Surge",
+    "fingerprint": "project not found"
+  }
+}

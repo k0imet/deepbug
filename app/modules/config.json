@@ -1,0 +1,42 @@
+{
+    "logging": {
+        "level": "INFO",
+        "file": "bugbountybot.log"
+    },
+    "project_settings": {
+        "base_projects_dir": "./projects"
+    },
+    "recon_output_dir": "./recon_tmp_output",
+    "tools": {
+        "paths": {
+            "subfinder": "/home/koimet/go/bin/subfinder",
+            "dnsx": "/home/koimet/go/bin/dnsx",
+            "nuclei": "/home/koimet/go/bin/nuclei",
+            "nuclei_templates": "/home/koimet/nuclei-templates",
+            "nmap": "/usr/bin/nmap",
+            "masscan": "/usr/bin/masscan",
+            "subjs": "/home/koimet/go/bin/subjs",
+            "webanalyze": "/usr/bin/webanalyze",
+            "httpx": "/usr/bin/httpx",
+            "getjs": "/usr/bin/getJS",
+            "gf": "/home/koimet/go/bin/gf",
+            "linkfinder": "/usr/bin/linkfinder",
+            "fakjs":"/usr/bin/fakjs",
+            "subdover": "/usr/bin/subdover",
+            "paramspider": "/home/koimet/.local/bin/paramspider",
+            "amass": "/home/koimet/go/bin/amass"
+        },
+        "rate_limits": {
+            "masscan": 1000
+        },
+        "sqltimer": {
+            "sleep_time": 5,
+            "threads": 10,
+            "timeout_multiplier": 6,
+            "timeout_buffer": 10
+        }
+    },
+    "output_formats": {
+        "default": "csv"
+    }
+}
