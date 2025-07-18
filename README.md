@@ -47,7 +47,7 @@ bash install.sh
 5. **Configure the Application**:
    Create or edit `config.yaml` in the root directory with necessary settings (e.g., paths to tools, project directory):
    ```yaml
-  {
+  
     "logging": {
         "level": "INFO",
         "file": "bugbountybot.log"
@@ -88,7 +88,6 @@ bash install.sh
     "output_formats": {
         "default": "csv"
     }
-}
    ```
 
 6. **Run the Application**:
