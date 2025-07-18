@@ -13,7 +13,7 @@ DeepBug is an automated reconnaissance and bug bounty hunting platform designed 
 
 - **Python**: 3.10 or higher
 - **Operating System**: Linux or macOS (some tools like Subfinder may require specific dependencies)
-- **Dependencies**: Listed in `requirements.txt`
+- **Dependencies**: create a  `requirements.txt`
 - **External Tools**: Subfinder, Amass, DNSx, HTTPx, Nmap, Masscan, Fakjs, Webanalyze, Paramspider, GF (ensure these are installed and accessible in your PATH)
 
 ## Installation
@@ -100,22 +100,24 @@ bash install.sh
 
 1. **Access the Web Interface**:
    - Open your browser and navigate to `http://localhost:8501` (default Streamlit port).
-   - The app opens on the **Projects** page (`0_Projects.py`).
 
 2. **Create or Select a Project**:
    - On the **Projects** page, create a new project or select an existing one.
+<img width="1849" height="671" alt="image" src="https://github.com/user-attachments/assets/92c03ee9-ebd9-4a72-8ea8-0681f1660c2a" />
+
    - Projects are stored in the `projects/` directory, with results organized by target (e.g., `projects/example/example_com/`).
 
 3. **Run Reconnaissance Scans**:
-   - Navigate to the **Reconnaissance Tools** page (`1_Reconnaissance.py`).
+   - Navigate to the **Recon** page (`1_Reconnaissance.py`).
    - Select or enter a target domain (e.g., `example.com`).
+  <img width="1864" height="367" alt="image" src="https://github.com/user-attachments/assets/ca484dc4-f460-4ade-bb56-f5eaa6a3bfde" />
+
    - Use the tabs to run:
      - **Subdomain & Takeover Scan**: Discover subdomains and check for takeovers.
      - **Port Scanning**: Scan for open ports using Nmap or Masscan.
      - **JavaScript Analysis**: Extract JS files and endpoints.
      - **Technology Detection**: Identify web technologies with Webanalyze.
      - **Vulnerability Detection**: Scan for vulnerabilities using Paramspider and GF.
-   - Scans run synchronously, displaying progress and results in real-time.
 
 4. **View Results in the Dashboard**:
    - Go to the **Dashboard** page (`2_Dashboard.py`) to view:
@@ -126,17 +128,8 @@ bash install.sh
    - Click **Refresh Dashboard** to update results after new scans.
 
 5. **Run Vulnerability Scans**:
-   - Use the **Vulnerability Scanner** page (`3_Scanner.py`) for additional vulnerability scans (if implemented with backgrounding, results may appear in the dashboard).
-
-## Example Workflow
-
-1. Create a project named `example.com` on the **Projects** page.
-2. On the **Recon** page, enter `example.com` as the target.
-3. Run a **Subdomain & Takeover Scan** to discover subdomains and live hosts.
-4. Run a **JavaScript Analysis** to extract JS files and endpoints.
-5. Run a ***
-6. Navigate to the **Dashboard** to view metrics and visualizations for `example.com`.
-
+   - Use the **Scanner** page vulnerability scans you can chose between single URLs or import live hosts from a project
+<img width="1842" height="597" alt="image" src="https://github.com/user-attachments/assets/22928e06-688d-4bbd-b907-608c2b5a6b48" />
 
 
 ## Contributing
