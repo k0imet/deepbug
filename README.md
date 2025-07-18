@@ -115,9 +115,17 @@ bash install.sh
 
    - Use the tabs to run:
      - **Subdomain & Takeover Scan**: Discover subdomains and check for takeovers.
+       <img width="1423" height="721" alt="image" src="https://github.com/user-attachments/assets/59b0b30a-5b99-4303-9e68-e29c4dc18926" />
+
      - **Port Scanning**: Scan for open ports using Nmap or Masscan.
+     <img width="1436" height="432" alt="image" src="https://github.com/user-attachments/assets/9bb6b126-f94c-4953-84f2-286835d0cc32" />
+
      - **JavaScript Analysis**: Extract JS files and endpoints.
+       <img width="1490" height="554" alt="image" src="https://github.com/user-attachments/assets/ea97a277-0598-44f7-8e2e-0e70e270210b" />
+       
      - **Technology Detection**: Identify web technologies with Webanalyze.
+    <img width="1479" height="623" alt="image" src="https://github.com/user-attachments/assets/2f55a34b-fb14-4d7e-8297-9fda03943c0e" />
+
      - **Vulnerability Detection**: Scan for vulnerabilities using Paramspider and GF.
 
 4. **View Results in the Dashboard**:
