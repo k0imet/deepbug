@@ -47,18 +47,48 @@ bash install.sh
 5. **Configure the Application**:
    Create or edit `config.yaml` in the root directory with necessary settings (e.g., paths to tools, project directory):
    ```yaml
-   projects_dir: projects
-   tools:
-     subfinder: subfinder
-     amass: amass
-     dnsx: dnsx
-     httpx: httpx
-     nmap: nmap
-     masscan: masscan
-     fakjs: fakjs
-     webanalyze: webanalyze
-     paramspider: paramspider
-     gf: gf
+  {
+    "logging": {
+        "level": "INFO",
+        "file": "bugbountybot.log"
+    },
+    "project_settings": {
+        "base_projects_dir": "./projects"
+    },
+    "recon_output_dir": "./recon_tmp_output",
+    "tools": {
+        "paths": {
+            "subfinder": "/home/username/go/bin/subfinder",
+            "dnsx": "/home/username/go/bin/dnsx",
+            "nuclei": "/home/username/go/bin/nuclei",
+            "nuclei_templates": "/home/username/nuclei-templates",
+            "nmap": "/usr/bin/nmap",
+            "masscan": "/usr/bin/masscan",
+            "subjs": "/home/username/go/bin/subjs",
+            "webanalyze": "/usr/bin/webanalyze",
+            "httpx": "/usr/bin/httpx",
+            "getjs": "/usr/bin/getJS",
+            "gf": "/home/username/go/bin/gf",
+            "linkfinder": "/usr/bin/linkfinder",
+            "fakjs":"/usr/bin/fakjs",
+            "subdover": "/usr/bin/subdover",
+            "paramspider": "/home/username/.local/bin/paramspider",
+            "amass": "/home/username/go/bin/amass"
+        },
+        "rate_limits": {
+            "masscan": 1000
+        },
+        "sqltimer": {
+            "sleep_time": 5,
+            "threads": 10,
+            "timeout_multiplier": 6,
+            "timeout_buffer": 10
+        }
+    },
+    "output_formats": {
+        "default": "csv"
+    }
+}
    ```
 
 6. **Run the Application**:
@@ -74,11 +104,11 @@ bash install.sh
 
 2. **Create or Select a Project**:
    - On the **Projects** page, create a new project or select an existing one.
-   - Projects are stored in the `projects/` directory, with results organized by target (e.g., `projects/MTN/mtn_com/`).
+   - Projects are stored in the `projects/` directory, with results organized by target (e.g., `projects/example/example_com/`).
 
 3. **Run Reconnaissance Scans**:
    - Navigate to the **Reconnaissance Tools** page (`1_Reconnaissance.py`).
-   - Select or enter a target domain (e.g., `mtn.com`).
+   - Select or enter a target domain (e.g., `example.com`).
    - Use the tabs to run:
      - **Subdomain & Takeover Scan**: Discover subdomains and check for takeovers.
      - **Port Scanning**: Scan for open ports using Nmap or Masscan.
