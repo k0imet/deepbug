@@ -1,5 +1,10 @@
 # Deepbug
 
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/0b90b0dd-c14e-4850-9b97-47b88e33a2ca" alt="DeepBug Logo" width="500">
+  <h1>DeepBug</h1>
+</div>
+
 DeepBug is an automated reconnaissance and bug bounty hunting platform designed to streamline your workflow. It integrates various open-source tools to perform subdomain enumeration, port scanning, JavaScript analysis, vulnerability scanning, and more, all managed within a user-friendly interface.
 ## Get Started:
 
