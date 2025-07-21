@@ -1,25 +1,26 @@
-# Deepbug
-
-<div align="center">
+<p align="center">
   <img src="https://github.com/user-attachments/assets/0b90b0dd-c14e-4850-9b97-47b88e33a2ca" alt="DeepBug Logo" width="500">
-  <h1>DeepBug</h1>
-</div>
+</p>
 
-DeepBug is an automated reconnaissance and bug bounty hunting platform designed to streamline your workflow. It integrates various open-source tools to perform subdomain enumeration, port scanning, JavaScript analysis, vulnerability scanning, and more, all managed within a user-friendly interface.
-## Get Started:
+<p align="center">
+  <strong>An automated reconnaissance and bug bounty hunting platform designed to streamline your workflow.</strong>
+</p>
 
-    📂 Projects: Start by creating a new project or loading an existing one. All your scan results and findings will be saved under the active project.
-    🔍 Reconnaissance: Dive into discovery! Run subdomain scans, active host verification, port scans, and JavaScript analysis.
-    🛡️ Vulnerability Scan: Once you have your targets, launch vulnerability scans using integrated tools like Nuclei.
-    📊 Dashboard & 📄 Reporting: Review your findings, track progress, and generate comprehensive reports.
+---
 
+DeepBug integrates various open-source tools to perform subdomain enumeration, port scanning, JavaScript analysis, vulnerability scanning, and more, all managed within a user-friendly interface.
 
-## Prerequisites
+## ✨ Features
 
-- **Python**: 3.10 or higher
-- **Operating System**: Linux or macOS (some tools like Subfinder may require specific dependencies)
-- **Dependencies**: create a  `requirements.txt`
-- **External Tools**: Subfinder, Amass, DNSx, HTTPx, Nmap, Masscan, Fakjs, Webanalyze, Paramspider, GF (ensure these are installed and accessible in your PATH)
+* **📂 Projects:** Start by creating a new project or loading an existing one. All your scan results and findings will be saved under the active project.
+* **🔍 Reconnaissance:** Dive into discovery! Run subdomain scans, active host verification, port scans, and JavaScript analysis.
+* **🛡️ Vulnerability Scan:** Once you have your targets, launch vulnerability scans using integrated tools like Nuclei.
+* **📊 Dashboard & 📄 Reporting:** Review your findings, track progress, and generate comprehensive reports.
+
+---
+
+## 🚀 Getting Started
+
 
 ## Installation
 
@@ -109,27 +110,27 @@ bash install.sh
 
 2. **Create or Select a Project**:
    - On the **Projects** page, create a new project or select an existing one.
-<img width="1849" height="671" alt="image" src="https://github.com/user-attachments/assets/92c03ee9-ebd9-4a72-8ea8-0681f1660c2a" />
+<img width="1896" height="671" alt="image" src="https://github.com/user-attachments/assets/92c03ee9-ebd9-4a72-8ea8-0681f1660c2a" />
 
    - Projects are stored in the `projects/` directory, with results organized by target (e.g., `projects/example/example_com/`).
 
 3. **Run Reconnaissance Scans**:
    - Navigate to the **Recon** page (`1_Reconnaissance.py`).
    - Select or enter a target domain (e.g., `example.com`).
-  <img width="1864" height="367" alt="image" src="https://github.com/user-attachments/assets/ca484dc4-f460-4ade-bb56-f5eaa6a3bfde" />
+  <img width="1896" height="367" alt="image" src="https://github.com/user-attachments/assets/ca484dc4-f460-4ade-bb56-f5eaa6a3bfde" />
 
    - Use the tabs to run:
      - **Subdomain & Takeover Scan**: Discover subdomains and check for takeovers.
-       <img width="1423" height="721" alt="image" src="https://github.com/user-attachments/assets/59b0b30a-5b99-4303-9e68-e29c4dc18926" />
+       <img width="1896" height="721" alt="image" src="https://github.com/user-attachments/assets/59b0b30a-5b99-4303-9e68-e29c4dc18926" />
 
      - **Port Scanning**: Scan for open ports using Nmap or Masscan.
-     <img width="1436" height="432" alt="image" src="https://github.com/user-attachments/assets/9bb6b126-f94c-4953-84f2-286835d0cc32" />
+     <img width="1896" height="432" alt="image" src="https://github.com/user-attachments/assets/9bb6b126-f94c-4953-84f2-286835d0cc32" />
 
      - **JavaScript Analysis**: Extract JS files and endpoints.
-       <img width="1490" height="554" alt="image" src="https://github.com/user-attachments/assets/ea97a277-0598-44f7-8e2e-0e70e270210b" />
+       <img width="1896" height="554" alt="image" src="https://github.com/user-attachments/assets/ea97a277-0598-44f7-8e2e-0e70e270210b" />
        
      - **Technology Detection**: Identify web technologies with Webanalyze.
-    <img width="1479" height="623" alt="image" src="https://github.com/user-attachments/assets/2f55a34b-fb14-4d7e-8297-9fda03943c0e" />
+    <img width="1896" height="623" alt="image" src="https://github.com/user-attachments/assets/2f55a34b-fb14-4d7e-8297-9fda03943c0e" />
 
      - **Vulnerability Detection**: Scan for vulnerabilities using Paramspider and GF.
 
@@ -143,7 +144,7 @@ bash install.sh
 
 5. **Run Vulnerability Scans**:
    - Use the **Scanner** page vulnerability scans you can chose between single URLs or import live hosts from a project
-<img width="1842" height="597" alt="image" src="https://github.com/user-attachments/assets/22928e06-688d-4bbd-b907-608c2b5a6b48" />
+<img width="1896" height="597" alt="image" src="https://github.com/user-attachments/assets/22928e06-688d-4bbd-b907-608c2b5a6b48" />
 
 
 ## Contributing
