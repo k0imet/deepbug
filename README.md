@@ -26,7 +26,7 @@ DeepBug integrates various open-source tools to perform subdomain enumeration, p
 
 1. **Clone the Repository**:
    ```bash
-   git clone https://github.com/<your-username>/deepug.git
+   git clone https://github.com/k0imet/deepug.git
    cd deepug
    ```
 2. **Install requirements.txt**
