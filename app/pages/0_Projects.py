@@ -1,149 +1,123 @@
-# pages/0_Projects.py
+import sys
+import json
+from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
-import sys
-from pathlib import Path
 import pandas as pd
 
-# Add the modules directory to the Python path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'modules'))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from project_manager import ProjectManager
-from utils import load_config, setup_logging  # Import setup_logging from utils
+from app.modules.utils import load_config
+from app.modules.project_manager import ProjectManager
+from app.utils.theme import inject_theme, app_header
 
-# Load configuration and setup logging
 CONFIG = load_config()
-setup_logging(CONFIG)  # Call setup_logging here too
 
-st.set_page_config(layout="wide", page_title="Project Management")
+inject_theme()
+app_header("📂", "Projects", "Create, load, and manage your reconnaissance projects.")
 
-# Initialize ProjectManager - Ensure it's done only once and persisted
+# Initialize ProjectManager
 if 'project_manager_instance' not in st.session_state:
     st.session_state.project_manager_instance = ProjectManager(CONFIG)
-project_manager: ProjectManager = st.session_state.project_manager_instance
+project_manager = st.session_state.project_manager_instance
 
-# Sync Streamlit session state with ProjectManager's active project
+# Sync project
 if 'current_project_name' not in st.session_state:
     st.session_state.current_project_name = project_manager.get_current_project_name()
 elif st.session_state.current_project_name != project_manager.get_current_project_name():
-    # If session state project diverges from persisted project, update session state
     st.session_state.current_project_name = project_manager.get_current_project_name()
 
-st.title("📂 Project Management")
-st.markdown("Create, load, and manage your reconnaissance projects.")
 
-st.sidebar.header("Project Actions")
+def scan_overview():
+    project_path = project_manager.get_current_project_path()
+    if not project_path or not project_path.is_dir():
+        return []
+    rows = []
+    for target_dir in project_path.iterdir():
+        if not target_dir.is_dir() or target_dir.name.startswith('.'):
+            continue
+        target_name = target_dir.name.replace('_', '.')
+        for scan_file in target_dir.glob('*_results.json'):
+            try:
+                ts = scan_file.stat().st_mtime
+                with open(scan_file, 'r') as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                continue
+            modified = datetime.fromtimestamp(ts)
+            scan_type = scan_file.name.replace('_results.json', '').replace('_', ' ').title()
+            if isinstance(data, list):
+                rows.append({'Scan Type': scan_type, 'Target': target_name, 'Records': len(data), 'Last Modified': modified})
+            elif isinstance(data, dict):
+                for sub_type, v in data.items():
+                    records = len(v) if isinstance(v, list) else 0
+                    rows.append({'Scan Type': f"{scan_type} ({sub_type.replace('_', ' ').title()})", 'Target': target_name, 'Records': records, 'Last Modified': modified})
+    rows.sort(key=lambda r: r['Last Modified'], reverse=True)
+    return rows
 
-# --- Create New Project ---
-with st.sidebar.expander("Create New Project", expanded=True):
-    new_project_name = st.text_input("New Project Name", key="new_project_input")
-    if st.button("Create Project", key="create_project_button"):
-        if new_project_name:
-            if project_manager.create_project(new_project_name):
-                st.session_state.current_project_name = new_project_name  # Update session state
-                st.sidebar.success(f"Project '{new_project_name}' created and set as active!")
-                st.rerun()  # Rerun to update the project selection dropdown and other pages
-            else:
-                st.sidebar.error(f"Failed to create project '{new_project_name}'. It might already exist or name is invalid.")
-        else:
-            st.sidebar.warning("Please enter a project name.")
 
-# --- Load Existing Project ---
-all_projects = project_manager.get_all_projects()
-with st.sidebar.expander("Load Existing Project", expanded=len(all_projects) > 0):
-    if all_projects:
-        current_selection_pm = project_manager.get_current_project_name()  # Get from ProjectManager
-        
-        # Determine default index for the selectbox
-        default_index = 0
-        if current_selection_pm and current_selection_pm in all_projects:
-            default_index = all_projects.index(current_selection_pm) + 1  # +1 for the "" option
-
-        selected_project = st.selectbox(
-            "Select Project:",
-            options=[''] + all_projects,  # Add an empty option at the start
-            index=default_index,
-            key="select_project"
-        )
-        if st.button("Load Project", key="load_project_button"):
-            if selected_project:
-                if project_manager.set_current_project(selected_project):
-                    st.session_state.current_project_name = selected_project  # Update session state
-                    st.sidebar.success(f"Project '{selected_project}' loaded successfully!")
-                    st.rerun()  # Rerun to update active project display on other pages
+# Sidebar actions
+with st.sidebar:
+    st.header("Project Actions")
+    with st.expander("Create New Project", expanded=True):
+        new_project_name = st.text_input("New Project Name", key="new_project_input")
+        if st.button("Create Project", key="create_project_button"):
+            if new_project_name:
+                if project_manager.create_project(new_project_name):
+                    st.session_state.current_project_name = new_project_name
+                    st.sidebar.success(f"Project '{new_project_name}' created!")
+                    st.rerun()
                 else:
-                    st.sidebar.error(f"Failed to load project '{selected_project}'. It may not exist.")
+                    st.sidebar.error("Failed to create project.")
             else:
-                st.sidebar.warning("Please select a project to load.")
-    else:
-        st.sidebar.info("No projects found. Create a new one!")
+                st.sidebar.warning("Enter a name.")
 
-# --- Delete Project ---
-with st.sidebar.expander("Delete Project", expanded=False):
-    if all_projects:
-        delete_project = st.selectbox(
-            "Select Project to Delete:",
-            options=[''] + all_projects,  # Add an empty option at the start
-            index=0,
-            key="delete_project"
-        )
-        if delete_project:
-            if st.button("Confirm Delete", key="confirm_delete_button"):
-                # Add a confirmation dialog
-                if st.session_state.get("confirm_delete", False):
+    all_projects = project_manager.get_all_projects()
+    with st.expander("Load Existing Project", expanded=len(all_projects) > 0):
+        if all_projects:
+            current = project_manager.get_current_project_name()
+            default_idx = all_projects.index(current) + 1 if current in all_projects else 0
+            selected = st.selectbox("Select Project:", options=[''] + all_projects, index=default_idx, key="select_project")
+            if st.button("Load Project", key="load_project_button"):
+                if selected and project_manager.set_current_project(selected):
+                    st.session_state.current_project_name = selected
+                    st.sidebar.success(f"Loaded '{selected}'")
+                    st.rerun()
+                else:
+                    st.sidebar.error("Failed to load.")
+        else:
+            st.sidebar.info("No projects found.")
+
+    with st.expander("Delete Project", expanded=False):
+        if all_projects:
+            delete_project = st.selectbox("Select Project to Delete:", options=[''] + all_projects, index=0, key="delete_project")
+            if delete_project:
+                if st.button("Confirm Delete", key="confirm_delete_button"):
                     if project_manager.delete_project(delete_project):
                         if delete_project == project_manager.get_current_project_name():
-                            st.session_state.current_project_name = None  # Clear active project if deleted
-                        st.session_state.confirm_delete = False  # Reset confirmation state
-                        st.sidebar.success(f"Project '{delete_project}' and its files deleted successfully!")
-                        st.rerun()  # Rerun to refresh the project list and UI
+                            st.session_state.current_project_name = None
+                        st.sidebar.success(f"Deleted '{delete_project}'")
+                        st.rerun()
                     else:
-                        st.sidebar.error(f"Failed to delete project '{delete_project}'. Check logs for details.")
-                else:
-                    st.session_state.confirm_delete = True
-                    st.sidebar.warning(f"Are you sure you want to delete '{delete_project}'? This action cannot be undone. Click 'Confirm Delete' again to proceed.")
+                        st.sidebar.error("Deletion failed.")
         else:
-            st.sidebar.warning("Please select a project to delete.")
-    else:
-        st.sidebar.info("No projects available to delete.")
+            st.sidebar.info("No projects to delete.")
 
-# --- Display Current Project Status on Main Page ---
-st.markdown("---")
-current_project = project_manager.get_current_project_name()  # Still get from ProjectManager
+# Main page – project overview
+current_project = project_manager.get_current_project_name()
 if current_project:
-    st.success(f"Currently Active Project: **{current_project}**")
-    st.write(f"Results for this project are stored in: `{project_manager.get_current_project_path()}`")
+    st.success(f"**Active Project:** `{current_project}`")
+    st.write(f"Results stored in: `{project_manager.get_current_project_path()}`")
 
-    # Display a summary of results in the current project
-    st.subheader("Project Overview: Scans Completed")
-    all_results = project_manager.get_all_results_for_current_project()
-    
-    if all_results:
-        summary_data = []
-        for scan_type, targets_data in all_results.items():
-            for target_name, result_data in targets_data.items():
-                if isinstance(result_data, pd.DataFrame):
-                    summary_data.append({
-                        "Scan Type": scan_type.replace('_', ' ').title(),
-                        "Target": target_name,
-                        "Results": f"{len(result_data)} rows"
-                    })
-                elif isinstance(result_data, dict):  # For nested results like JS analysis
-                    nested_summary = []
-                    for sub_type, sub_df in result_data.items():
-                        if isinstance(sub_df, pd.DataFrame) and not sub_df.empty:
-                            nested_summary.append(f"{sub_type.replace('_', ' ').title()} ({len(sub_df)} rows)")
-                    summary_data.append({
-                        "Scan Type": scan_type.replace('_', ' ').title(),
-                        "Target": target_name,
-                        "Results": ", ".join(nested_summary) if nested_summary else "No nested results"
-                    })
-        if summary_data:
-            st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
-        else:
-            st.info("No scan results recorded for this project yet.")
+    if st.button("🔄 Refresh"):
+        st.rerun()
+
+    st.subheader("📊 Project Overview")
+    overview = scan_overview()
+    if overview:
+        st.dataframe(pd.DataFrame(overview), width='stretch')
     else:
-        st.info("No scan results recorded for this project yet.")
-
+        st.info("No scan data found.")
 else:
-    st.warning("No project is currently loaded. Please create a new project or load an existing one from the sidebar.")
+    st.warning("No project loaded. Use the sidebar to create or load one.")

@@ -1,0 +1,30 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# --- DeepBug: NEVER commit scan/project data ---
+projects/
+results/
+logs/
+app/logs/
+
+# --- Secrets & local state (never commit) ---
+app/modules/config.json
+AGENTS.md
+resume.cfg
+
+# --- Caches ---
+app/modules/tools/registry_cache.db
+*.sqlite
+*.sqlite3
+.cache/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store

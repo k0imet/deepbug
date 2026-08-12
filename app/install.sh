@@ -1,173 +1,153 @@
 #!/bin/bash
+# Exit on error, unset variables are errors, and pipe failures are caught
+set -euo pipefail
 
-# Exit immediately if a command exits with a non-zero status.
-set -e
+# Color output for better readability
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
 
-echo "Starting installation of penetration testing tools based on config.json..."
+# ---------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------
+print_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+print_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+command_exists() { command -v "$1" >/dev/null 2>&1; }
 
-# Function to check if a command exists
-command_exists () {
-    command -v "$1" >/dev/null 2>&1
-}
-
-# --- Update System Packages ---
-echo ""
-echo "Updating system packages..."
+# ---------------------------------------------------------------------
+# 1. Update system and install base dependencies
+# ---------------------------------------------------------------------
+print_info "Updating system packages and installing base dependencies..."
 sudo apt update -y
 sudo apt upgrade -y
+sudo apt install -y git make gcc libpcap-dev python3 python3-pip python3-venv curl wget
 
-# --- Install Common Dependencies ---
-echo ""
-echo "Installing common dependencies for Go and Python tools..."
-sudo apt install -y git make gcc libpcap-dev python3 python3-pip
-
-# --- Go Tools Installation ---
-# Ensure Go is installed and GOPATH/GOBIN are set
+# ---------------------------------------------------------------------
+# 2. Ensure Go is installed and set up GOPATH/GOBIN
+# ---------------------------------------------------------------------
 if ! command_exists go; then
-    echo ""
-    echo "Go is not installed. Please install Go and set up GOPATH/GOBIN before running this script."
-    echo "You can follow instructions from https://golang.org/doc/install"
+    print_error "Go is not installed. Please install Go from https://golang.org/doc/install"
     exit 1
 fi
-
-export GOBIN="/home/koimet/go/bin" # Ensure GOBIN is set as per your configuration
+export GOPATH="${GOPATH:-$HOME/go}"
+export GOBIN="${GOBIN:-$GOPATH/bin}"
 mkdir -p "$GOBIN"
-echo "Go environment detected. Installing Go tools to $GOBIN..."
+print_info "Go environment: GOPATH=$GOPATH, GOBIN=$GOBIN"
+export PATH="$GOBIN:$HOME/.local/bin:$PATH"
 
-# Mapping tool names from config.json to their Go module paths
-declare -A GO_TOOLS_MAP=(
-    ["subfinder"]="github.com/projectdiscovery/subfinder/v2/cmd/subfinder"
-    ["dnsx"]="github.com/projectdiscovery/dnsx/cmd/dnsx"
-    ["nuclei"]="github.com/projectdiscovery/nuclei/v2/cmd/nuclei"
-    ["subjs"]="github.com/lc/subjs@latest" # common module path for subjs
-    ["webanalyze"]="github.com/rverton/webanalyze/cmd/webanalyze@latest" # Correct Go path
-    ["httpx"]="github.com/projectdiscovery/httpx/cmd/httpx"
-    ["getjs"]="github.com/003random/getJS/v2@latest" # common module path for getJS
-    ["gf"]="github.com/tomnomnom/gf"
-    ["amass"]="github.com/OWASP/Amass/v3/cmd/amass"
-    ["fakjs"]="github.com/thd3r/fakjs@latest" # Added fakjs as a Go tool
+# ---------------------------------------------------------------------
+# 3. Install Go tools
+# ---------------------------------------------------------------------
+print_info "Installing/Updating Go tools..."
+declare -A GO_TOOLS=(
+    ["subfinder"]="github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+    ["dnsx"]="github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
+    ["nuclei"]="github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
+    ["subjs"]="github.com/lc/subjs@latest"
+    ["webanalyze"]="github.com/rverton/webanalyze/cmd/webanalyze@latest"
+    ["httpx"]="github.com/projectdiscovery/httpx/cmd/httpx@latest"
+    ["getjs"]="github.com/003random/getJS/v2@latest"
+    ["gf"]="github.com/tomnomnom/gf@latest"
+    ["amass"]="github.com/owasp-amass/amass/v3/cmd/amass@latest"
+    ["fakjs"]="github.com/thd3r/fakjs@latest"
+    ["ffuf"]="github.com/ffuf/ffuf/v2@latest"
 )
 
-for tool_name in "${!GO_TOOLS_MAP[@]}"; do
-    module_path="${GO_TOOLS_MAP[$tool_name]}"
-    # Determine the actual binary name that `go install` will produce
-    binary_name=$(basename "$module_path")
-    # If the path includes /cmd/toolname, the binary name is 'toolname'
-    if [[ "$binary_path" == *"/cmd/"* ]]; then
-        binary_name=$(echo "$module_path" | awk -F'/cmd/' '{print $2}' | cut -d'@' -f1)
-    elif [[ "$binary_name" == *"@"* ]]; then
-        binary_name=$(echo "$binary_name" | cut -d'@' -f1)
-    fi
-
-    target_path="$GOBIN/$binary_name"
-
-    if [ ! -f "$target_path" ]; then
-        echo "Installing $tool_name from $module_path..."
-        go install "$module_path"
+for tool in "${!GO_TOOLS[@]}"; do
+    module="${GO_TOOLS[$tool]}"
+    print_info "Installing $tool from $module ..."
+    go install "$module"
+    
+    # Verify
+    if command_exists "$tool"; then
+        print_info "$tool installed successfully → $(command -v $tool)"
     else
-        echo "$tool_name already exists at $target_path. Skipping."
+        print_warn "$tool may not be in PATH. Try restarting shell or check $GOBIN"
     fi
 done
 
-# Nuclei Templates (still needed for Nuclei to function)
-NUCLEI_TEMPLATES_PATH="/home/koimet/nuclei-templates"
-if [ ! -d "$NUCLEI_TEMPLATES_PATH" ]; then
-    echo ""
-    echo "Cloning Nuclei Templates to $NUCLEI_TEMPLATES_PATH..."
-    git clone https://github.com/projectdiscovery/nuclei-templates.git "$NUCLEI_TEMPLATES_PATH"
+# ---------------------------------------------------------------------
+# 4. Clone / Update Nuclei templates
+# ---------------------------------------------------------------------
+NUCLEI_TEMPLATES_DIR="${NUCLEI_TEMPLATES_DIR:-$HOME/nuclei-templates}"
+if [ ! -d "$NUCLEI_TEMPLATES_DIR" ]; then
+    print_info "Cloning Nuclei templates to $NUCLEI_TEMPLATES_DIR ..."
+    git clone https://github.com/projectdiscovery/nuclei-templates.git "$NUCLEI_TEMPLATES_DIR"
 else
-    echo "Nuclei templates already exist at $NUCLEI_TEMPLATES_PATH. Skipping."
+    print_info "Updating Nuclei templates in $NUCLEI_TEMPLATES_DIR ..."
+    (cd "$NUCLEI_TEMPLATES_DIR" && git pull --ff-only) || print_warn "Failed to update templates (git pull)."
 fi
 
-
-# --- APT Package Installations ---
-echo ""
-echo "Installing tools via apt (nmap, masscan) if not present..."
-
-APT_TOOLS=(
-    "nmap"
-    "masscan"
-)
-
-for tool in "${APT_TOOLS[@]}"; do
-    if ! command_exists "$tool"; then
-        echo "Installing $tool..."
-        sudo apt install -y "$tool"
+# ---------------------------------------------------------------------
+# 5. Install APT packages (nmap, masscan)
+# ---------------------------------------------------------------------
+print_info "Installing APT packages..."
+for pkg in nmap masscan; do
+    if ! command_exists "$pkg"; then
+        sudo apt install -y "$pkg"
+        print_info "$pkg installed."
     else
-        echo "$tool already installed. Skipping."
+        print_warn "$pkg already installed."
     fi
 done
 
-# --- Python Tools Installation ---
-echo ""
-echo "Installing Python tools..."
+# ---------------------------------------------------------------------
+# 6. Install Python tools
+# ---------------------------------------------------------------------
+print_info "Installing Python-based tools..."
 
-# Paramspider
+# 6a. Paramspider
 PARAMSPIDER_DIR="/opt/paramspider"
 if [ ! -d "$PARAMSPIDER_DIR" ]; then
-    echo "Cloning Paramspider to $PARAMSPIDER_DIR..."
+    print_info "Cloning Paramspider..."
     sudo git clone https://github.com/devanshbatham/paramspider.git "$PARAMSPIDER_DIR"
-    echo "Installing Paramspider dependencies..."
-    (
-        cd "$PARAMSPIDER_DIR"
-        sudo pip3 install . # Install from current directory
-    )
-    # Paramspider executable might be in ~/.local/bin or /usr/local/bin depending on pip setup
-    # If it's not in PATH, you might need to symlink it.
-    if ! command_exists "paramspider"; then
-        echo "Attempting to create symlink for paramspider to /usr/local/bin/..."
-        # Check if it's in ~/.local/bin and symlink
-        if [ -f "$HOME/.local/bin/paramspider" ]; then
-            sudo ln -s "$HOME/.local/bin/paramspider" "/usr/local/bin/paramspider"
-        else
-            echo "Warning: paramspider executable not found in default pip locations. You might need to manually symlink it or add ~/.local/bin to your PATH."
-        fi
-    fi
+    (cd "$PARAMSPIDER_DIR" && sudo python3 -m pip install .)
+    sudo ln -sf /root/.local/bin/paramspider /usr/local/bin/paramspider 2>/dev/null || true
 else
-    echo "Paramspider already exists at $PARAMSPIDER_DIR. Skipping cloning and installation."
-    echo "To ensure it's updated, you might manually run: (cd $PARAMSPIDER_DIR && sudo git pull && sudo pip3 install .)"
+    print_warn "Paramspider already exists."
 fi
 
-
-# LinkFinder
+# 6b. LinkFinder
 LINKFINDER_DIR="/opt/LinkFinder"
 if [ ! -d "$LINKFINDER_DIR" ]; then
-    echo "Cloning LinkFinder to $LINKFINDER_DIR..."
+    print_info "Cloning LinkFinder..."
     sudo git clone https://github.com/GerbenJavado/LinkFinder.git "$LINKFINDER_DIR"
-    echo "Installing LinkFinder dependencies and setting up..."
-    # Navigate to the directory to run setup.py
     (cd "$LINKFINDER_DIR" && sudo python3 setup.py install)
 else
-    echo "LinkFinder already exists at $LINKFINDER_DIR. Skipping cloning and installation."
-    echo "To ensure it's updated, you might manually run: (cd $LINKFINDER_DIR && sudo git pull && sudo python3 setup.py install)"
+    print_warn "LinkFinder already exists."
 fi
 
-# Subdover
-SUBDOVER_DIR="/opt/subdover"
-if [ ! -d "$SUBDOVER_DIR" ]; then
-    echo "Cloning subdover to $SUBDOVER_DIR..."
-    sudo git clone https://github.com/PushpenderIndia/subdover.git "$SUBDOVER_DIR"
-    echo "Installing subdover dependencies and setting up..."
-    # Navigate to the directory for installation
-    (
-        cd "$SUBDOVER_DIR"
-        sudo chmod +x installer_linux.py
-        sudo python3 installer_linux.py
-        sudo chmod +x subdover.py # Make main script executable
-    )
-    # Create a symlink to make it accessible from anywhere
-    if [ ! -f "/usr/local/bin/subdover" ]; then
-        echo "Creating symlink for subdover to /usr/local/bin/subdover..."
-        sudo ln -s "$SUBDOVER_DIR/subdover.py" "/usr/local/bin/subdover"
-    else
-        echo "Symlink for subdover already exists."
-    fi
+# 6c. cloud_enum
+CLOUD_ENUM_DIR="/opt/cloud_enum"
+if [ ! -d "$CLOUD_ENUM_DIR" ]; then
+    print_info "Installing cloud_enum..."
+    sudo git clone https://github.com/initstring/cloud_enum.git "$CLOUD_ENUM_DIR"
+    (cd "$CLOUD_ENUM_DIR" && sudo python3 -m pip install -r requirements.txt --break-system-packages)
+    sudo ln -sf "$CLOUD_ENUM_DIR/cloud_enum.py" /usr/local/bin/cloud_enum
+    sudo chmod +x /usr/local/bin/cloud_enum
 else
-    echo "subdover already exists at $SUBDOVER_DIR. Skipping cloning and installation."
-    echo "To ensure it's updated, you might manually run: (cd $SUBDOVER_DIR && sudo git pull && sudo python3 installer_linux.py)"
+    print_warn "cloud_enum already exists."
 fi
 
+# ---------------------------------------------------------------------
+# 7. Final summary & verification
+# ---------------------------------------------------------------------
 echo ""
-echo "Installation script finished."
-echo "Remember to source your shell configuration file (e.g., 'source ~/.bashrc' or 'source ~/.zshrc') if Go paths were just set."
-echo "Verify installations by running each tool's command (e.g., 'subfinder -h', 'nmap -h', 'subdover --help')."
+print_info "Installation completed!"
+
+echo "Key tools verification:"
+for tool in subfinder dnsx nuclei httpx ffuf nmap amass paramspider; do
+    if command_exists "$tool"; then
+        print_info "✓ $tool → $(command -v $tool)"
+    else
+        print_warn "✗ $tool not found in PATH"
+    fi
+done
+
+print_info "Add these lines to ~/.bashrc (or ~/.zshrc) and restart your shell:"
+echo "   export PATH=\"\$PATH:$GOBIN:\$HOME/.local/bin:/usr/local/bin\""
+echo "   export NUCLEI_TEMPLATES_PATH=$NUCLEI_TEMPLATES_DIR"
+
+print_info "Done! Test tools with: <toolname> -h"

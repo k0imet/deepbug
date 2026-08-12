@@ -1,91 +1,90 @@
+import sys
+import html
+from datetime import datetime
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-# import base64 # Removed: Not used in the current logic
-import sys
-from pathlib import Path
-import html # Already correctly imported for escaping HTML
 
-# Add the modules directory to the Python path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'modules'))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-# --- Import load_config and setup_logging ---
-from utils import load_config, setup_logging
+from app.modules.utils import load_config
+from app.modules.project_manager import ProjectManager
+from app.utils.theme import inject_theme, app_header
 
-# --- Load configuration and setup logging ---
-# This is the crucial fix for the TypeError
 CONFIG = load_config()
-setup_logging(CONFIG) 
 
-st.set_page_config(layout="wide", page_title="Report Generator")
+inject_theme()
+app_header("📄", "Reporting", "Generate an HTML report from the saved scan results of the active project.")
 
-st.title("📄 Report Generator")
-st.markdown("Select scan results from your current session to generate an HTML report.")
+if 'project_manager_instance' not in st.session_state:
+    st.session_state.project_manager_instance = ProjectManager(CONFIG)
+project_manager = st.session_state.project_manager_instance
 
-# --- Helper function to get all relevant scan keys from session state ---
-def get_all_scan_keys_from_session():
-    keys = []
-    # Iterate through session_state to find dataframes from recon and js_analysis
-    for key in st.session_state:
-        # Check if the key indicates scan results and its value is a DataFrame or a dictionary
-        if ('_results_' in key or 'js_analysis_results_' in key) and isinstance(st.session_state[key], (pd.DataFrame, dict)):
-            # If it's a dict (from full_js_analysis), iterate its sub-keys
-            if isinstance(st.session_state[key], dict):
-                for sub_key in st.session_state[key]:
-                    # Only add if the nested item is a DataFrame and not empty
-                    if isinstance(st.session_state[key][sub_key], pd.DataFrame) and not st.session_state[key][sub_key].empty:
-                        # Append with a descriptive prefix for dicts to differentiate
-                        keys.append(f"{key}/{sub_key}")
-            # If it's a direct DataFrame and not empty
-            elif isinstance(st.session_state[key], pd.DataFrame) and not st.session_state[key].empty:
-                keys.append(key)
-    return sorted(list(set(keys))) # Use set to deduplicate, then sort for consistent order
+if not project_manager.get_current_project_name():
+    st.warning("No project selected. Go to Projects first.")
+    st.stop()
 
-available_scan_keys = get_all_scan_keys_from_session()
 
-if not available_scan_keys:
-    st.info("No scan results found in the current session to generate a report. Please run some scans first.")
+def _nice_label(target: str, scan_type: str, sub: str = '') -> str:
+    base = scan_type.replace('_', ' ').title()
+    if sub:
+        return f"{target} - {base} - {sub.replace('_', ' ').title()}"
+    return f"{target} - {base}"
+
+
+def get_report_sections():
+    """(label, df) for every non-empty saved scan result across targets."""
+    sections = []
+    all_results = project_manager.get_all_results_for_current_project()  # {scan_type: {target: df}}
+    for scan_type in sorted(all_results.keys()):
+        for target in sorted(all_results[scan_type].keys()):
+            data = all_results[scan_type][target]
+            if data is None:
+                continue
+            if isinstance(data, dict):
+                for sub_key in sorted(data.keys()):
+                    df = data[sub_key]
+                    if isinstance(df, pd.DataFrame) and not df.empty:
+                        sections.append((_nice_label(target, scan_type, sub_key), df))
+            elif isinstance(data, pd.DataFrame) and not data.empty:
+                sections.append((_nice_label(target, scan_type), data))
+    return sections
+
+
+sections = get_report_sections()
+labels = [label for label, _ in sections]
+total_rows = sum(len(df) for _, df in sections)
+
+if not labels:
+    st.info("No results saved for the active project yet. Run scans in Reconnaissance, then run a Vulnerability Scan; results appear here.")
 else:
+    st.caption(f"{len(sections)} section(s), {total_rows} total row(s) loaded from disk.")
+
     st.subheader("Select Scan Results to Include")
-    selected_keys = st.multiselect(
+    selected_labels = st.multiselect(
         "Choose which scan results to include in the report:",
-        options=available_scan_keys,
-        default=available_scan_keys # Select all by default for convenience
+        options=labels,
+        default=labels  # Select all by default for convenience
     )
 
     report_title = st.text_input("Report Title", "Bug Bounty Reconnaissance Report")
     report_author = st.text_input("Report Author", "BugBountyBot User")
 
     if st.button("Generate HTML Report"):
-        if not selected_keys:
+        if not selected_labels:
             st.warning("Please select at least one scan result to include in the report.")
         else:
+            label_to_df = dict(sections)
             report_sections = []
-            for key_to_include in selected_keys:
-                df_to_add = None
-                # Default display title
-                display_title = key_to_include.replace('_', ' ').replace('results', 'Results').title()
-
-                # Handle nested dictionary structure (e.g., from JS analysis)
-                if '/' in key_to_include:
-                    main_key, sub_key = key_to_include.split('/', 1)
-                    if main_key in st.session_state and isinstance(st.session_state[main_key], dict):
-                        if sub_key in st.session_state[main_key] and isinstance(st.session_state[main_key][sub_key], pd.DataFrame):
-                            df_to_add = st.session_state[main_key][sub_key]
-                            # Create a more descriptive title for nested data
-                            display_title = f"{main_key.replace('_', ' ').title()} - {sub_key.replace('_', ' ').title()}"
-                else:
-                    # Handle direct DataFrame in session state
-                    if key_to_include in st.session_state and isinstance(st.session_state[key_to_include], pd.DataFrame):
-                        df_to_add = st.session_state[key_to_include]
-                
-                # Add DataFrame to report if available and not empty
+            for label in selected_labels:
+                df_to_add = label_to_df.get(label)
+                display_title = label
                 if df_to_add is not None and not df_to_add.empty:
                     report_sections.append(f"<h2>{display_title}</h2>")
                     report_sections.append(df_to_add.to_html(classes="dataframe", escape=False, index=False))
-                    report_sections.append("<br><hr><br>") # Separator for readability
+                    report_sections.append("<br><hr><br>")  # Separator for readability
                 else:
-                    # Indicate if no data was found for a selected section
                     report_sections.append(f"<h2>{display_title}</h2>")
                     report_sections.append("<p>No data available for this section.</p>")
                     report_sections.append("<br><hr><br>")
@@ -169,7 +168,7 @@ else:
             </body>
             </html>
             """
-            
+
             # Escape HTML characters in user-provided inputs for security
             report_title_escaped = html.escape(report_title)
             report_author_escaped = html.escape(report_author)
@@ -181,7 +180,7 @@ else:
                 report_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 report_sections_html="\n".join(report_sections)
             )
-            
+
             # Provide a download button for the generated HTML report
             st.download_button(
                 label="Download HTML Report",

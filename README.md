@@ -1,163 +1,212 @@
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/0b90b0dd-c14e-4850-9b97-47b88e33a2ca" alt="DeepBug Logo" width="500">
-</p>
+# 🐛 DeepBug
 
-<p align="center">
-  <strong>An automated reconnaissance and bug bounty hunting platform designed to streamline your workflow.</strong>
-</p>
+**An automated reconnaissance and bug bounty hunting platform built with Streamlit.**
+
+DeepBug is a self-hosted, browser-based platform that streamlines the whole bug bounty workflow: create a project, run deep reconnaissance against your targets, launch Nuclei scans, review everything on a dashboard, export HTML reports, and optionally bring your own AI to analyze findings. It integrates battle-tested open-source tools — subfinder, amass, nuclei, katana, ffuf, httpx, nmap, and friends — behind one friendly web UI.
 
 ---
 
-DeepBug integrates various open-source tools to perform subdomain enumeration, port scanning, JavaScript analysis, vulnerability scanning, and more, all managed within a user-friendly interface.
-
 ## ✨ Features
 
-* **📂 Projects:** Start by creating a new project or loading an existing one. All your scan results and findings will be saved under the active project.
-* **🔍 Reconnaissance:** Dive into discovery! Run subdomain scans, active host verification, port scans, and JavaScript analysis.
-* **🛡️ Vulnerability Scan:** Once you have your targets, launch vulnerability scans using integrated tools like Nuclei.
-* **📊 Dashboard & 📄 Reporting:** Review your findings, track progress, and generate comprehensive reports.
+* **📂 Projects** — Create, load, or delete projects. Every scan result is saved per project, per target, straight to disk.
+* **🔍 Reconnaissance** — 8 tabs of discovery: subdomain enumeration & takeover checks, port scanning, deep JavaScript analysis, vulnerability detection, cloud & infra probing, parameter mining, security headers, and advanced scans. Powered by **69 tool modules** in `app/modules/tools`.
+* **🛡️ Vulnerability Scanner** — Nuclei-based scanning of your live hosts with a live progress UI, results saved to disk and reloadable later.
+* **📊 Dashboard** — KPIs, charts, target overview, detailed results, and recent activity across the active project.
+* **📄 Reporting** — One-click HTML report generation from all saved scan sections, with a download button.
+* **🤖 AI Assistant** — Bring your own AI: chat with pinned context and get summaries, triage, prioritization, and next-step suggestions for saved results — with a built-in heuristic fallback when no API key is configured.
+
+---
+
+## 🧭 Workflow (6 pages)
+
+The app ships with a sidebar navigation in canonical workflow order:
+
+1. **Projects** (`/projects`) — create/load/delete projects, see a per-target scan overview.
+2. **Reconnaissance** (`/recon`) — target picker (persisted per project) + 8 scan tabs:
+   * 🌐 **Subdomain & Takeover** — subfinder + amass + CT logs in parallel, DNS resolution, httpx probing, takeover checks.
+   * 🔌 **Port & Service Scan** — nmap / masscan / naabu.
+   * 📜 **JavaScript Analysis** — the v3.0 engine with 9 sub-tabs (overview, secrets & patterns, client-side vectors, endpoints, plus active validation for **prototype pollution, DOM XSS, CORS, open redirect, and SSRF**).
+   * 🔍 **Vulnerability Detection** — GF pattern scanning plus kxss confirmation.
+   * ☁️ **Cloud & Infra** — cloud enumeration, Shodan, ASN/DNS OSINT.
+   * 🔑 **Parameter Mining** — param mining and historical URL hunting.
+   * 🛡️ **Security Headers** — header hardening checks.
+   * 🧬 **Advanced Scans** — GraphQL, IDOR, race conditions, smuggling, JWT, and more.
+3. **Vulnerability Scanner** (`/scanner`) — pick targets from `live_hosts` (or paste URLs manually), run Nuclei in a background thread with a queue-driven progress bar, and save findings to disk as `vulnerabilities`.
+4. **Dashboard** (`/dashboard`) — KPI metrics (subdomains, open ports, JS files, vulnerabilities, takeovers), charts, target overview, detailed expandable results, and recent activity (mtime-sorted), plus a refresh button.
+5. **Reporting** (`/reporting`) — pick saved scan sections, set a title/author, and generate an escaped, download-ready HTML report.
+6. **AI Assistant** (`/ai`) — chat with an OpenAI-compatible endpoint and analyze saved scan results.
+
+---
+
+## 📸 Screenshots
+
+DeepBug ships with a **dark theme by default** with a **☀️/🌙 theme toggle in the sidebar**
+— switch between dark and light at any time; your choice persists across pages.
+The screenshots below use a demo project (`acme.com`).
+
+| Dashboard (dark) | Dashboard (light) |
+|---|---|
+| ![Dashboard dark](assets/screenshots/dashboard.png) | ![Dashboard light](assets/screenshots/dashboard_light.png) |
+
+| Projects | Reconnaissance |
+|---|---|
+| ![Projects](assets/screenshots/projects.png) | ![Reconnaissance](assets/screenshots/recon.png) |
+
+| Vulnerability Scanner | Reporting |
+|---|---|
+| ![Vulnerability Scanner](assets/screenshots/scanner.png) | ![Reporting](assets/screenshots/reporting.png) |
+
+| AI Assistant |
+|---|
+| ![AI Assistant](assets/screenshots/ai.png) |
 
 ---
 
 ## 🚀 Getting Started
 
+### Prerequisites
 
-## Installation
+* Python 3.13
+* [Go](https://golang.org/doc/install) (for the external recon tools)
+* A modern browser
 
-1. **Clone the Repository**:
-   ```bash
-   git clone https://github.com/k0imet/deepug.git
-   cd deepug
-   ```
-2. **Install requirements.txt**
+### 1. Install Python dependencies
 
-   Ensure `requirements.txt` includes:
-   ```text
-   streamlit
-   pandas
-   plotly
-   pyyaml
-   ```
+```bash
+pip install -r requirements.txt
+```
 
-4. **Install External Tools**:
-   Install the required reconnaissance tools. For example:
-  ```bash
-bash install.sh
-   ```
+### 2. Install external tools
 
-   Ensure go tools are in your PATH:
-   ```bash
-   export PATH=$PATH:$HOME/go/bin
-   ```
+`app/install.sh` installs the command-line tools DeepBug shells out to (requires `sudo` for apt packages):
 
-5. **Configure the Application**:
-   Create or edit `config.yaml` in the root directory with necessary settings (e.g., paths to tools, project directory):
-   ```yaml
-  
-    "logging": {
-        "level": "INFO",
-        "file": "bugbountybot.log"
-    },
-    "project_settings": {
-        "base_projects_dir": "./projects"
-    },
-    "recon_output_dir": "./recon_tmp_output",
-    "tools": {
-        "paths": {
-            "subfinder": "/home/username/go/bin/subfinder",
-            "dnsx": "/home/username/go/bin/dnsx",
-            "nuclei": "/home/username/go/bin/nuclei",
-            "nuclei_templates": "/home/username/nuclei-templates",
-            "nmap": "/usr/bin/nmap",
-            "masscan": "/usr/bin/masscan",
-            "subjs": "/home/username/go/bin/subjs",
-            "webanalyze": "/usr/bin/webanalyze",
-            "httpx": "/usr/bin/httpx",
-            "getjs": "/usr/bin/getJS",
-            "gf": "/home/username/go/bin/gf",
-            "linkfinder": "/usr/bin/linkfinder",
-            "fakjs":"/usr/bin/fakjs",
-            "subdover": "/usr/bin/subdover",
-            "paramspider": "/home/username/.local/bin/paramspider",
-            "amass": "/home/username/go/bin/amass"
-        },
-        "rate_limits": {
-            "masscan": 1000
-        },
-        "sqltimer": {
-            "sleep_time": 5,
-            "threads": 10,
-            "timeout_multiplier": 6,
-            "timeout_buffer": 10
-        }
-    },
-    "output_formats": {
-        "default": "csv"
-    }
-   ```
+* **Go tools**: subfinder, dnsx, nuclei, subjs, webanalyze, httpx, getjs, gf, amass, fakjs, ffuf
+* **Nuclei templates**: cloned to `~/nuclei-templates`
+* **APT packages**: nmap, masscan
+* **Python tools**: paramspider, LinkFinder, cloud_enum
 
-6. **Run the Application**:
-   ```bash
-   streamlit run app.py
-   ```
+```bash
+bash app/install.sh
+```
 
-## Usage
+Make sure the Go binary dir is on your `PATH`:
 
-1. **Access the Web Interface**:
-   - Open your browser and navigate to `http://localhost:8501` (default Streamlit port).
-  <img width="1896" height="747" alt="image" src="https://github.com/user-attachments/assets/42ef5603-7644-4ec8-ac28-7ad7d5e01ec0" />
+```bash
+export PATH=$PATH:$HOME/go/bin
+```
 
+### 3. Run
 
-2. **Create or Select a Project**:
-   - On the **Projects** page, create a new project or select an existing one.
-<img width="1896" height="671" alt="image" src="https://github.com/user-attachments/assets/92c03ee9-ebd9-4a72-8ea8-0681f1660c2a" />
+```bash
+streamlit run deepbug_app.py
+```
 
-   - Projects are stored in the `projects/` directory, with results organized by target (e.g., `projects/example/example_com/`).
+Then open http://localhost:8501 — **dark theme by default**, with a **🌙/☀️ theme toggle in the sidebar**
+(your choice persists across pages; change the default in `.streamlit/config.toml`).
 
-3. **Run Reconnaissance Scans**:
-   - Navigate to the **Recon** page (`1_Reconnaissance.py`).
-   - Select or enter a target domain (e.g., `example.com`).
-  <img width="1896" height="367" alt="image" src="https://github.com/user-attachments/assets/ca484dc4-f460-4ade-bb56-f5eaa6a3bfde" />
+---
 
-   - Use the tabs to run:
-     - **Subdomain & Takeover Scan**: Discover subdomains and check for takeovers.
-       <img width="1896" height="721" alt="image" src="https://github.com/user-attachments/assets/59b0b30a-5b99-4303-9e68-e29c4dc18926" />
+## 🗄️ How Data Is Persisted
 
-     - **Port Scanning**: Scan for open ports using Nmap or Masscan.
-     <img width="1896" height="432" alt="image" src="https://github.com/user-attachments/assets/9bb6b126-f94c-4953-84f2-286835d0cc32" />
+Everything is saved per project to disk — no database required:
 
-     - **JavaScript Analysis**: Extract JS files and endpoints.
-       <img width="1896" height="554" alt="image" src="https://github.com/user-attachments/assets/ea97a277-0598-44f7-8e2e-0e70e270210b" />
-       
-     - **Technology Detection**: Identify web technologies with Webanalyze.
-    <img width="1896" height="623" alt="image" src="https://github.com/user-attachments/assets/2f55a34b-fb14-4d7e-8297-9fda03943c0e" />
+* Results live at `projects/<project>/<sanitized_target>/<scan_type>_results.json` (atomic writes via temp file + rename, scope-filtered at save time).
+* The active project is stored in `.current_project_name.txt`.
+* Each project has its own **scope manager** (`.scope.json`) with exact-match, wildcard (`*.example.com`), and exclusion rules. Scope is enforced as a central chokepoint — out-of-scope rows never reach disk.
+* Nuclei findings are saved as `vulnerabilities` results and reloaded from disk on the Scanner page.
+* The Dashboard and Reporting pages read from disk as the single source of truth.
+* AI chat history is persisted per project in `.ai_chat.json`.
 
-     - **Vulnerability Detection**: Scan for vulnerabilities using Paramspider and GF.
+---
 
-4. **View Results in the Dashboard**:
-   - Go to the **Dashboard** page (`2_Dashboard.py`) to view:
-     - **Key Metrics**: Counts of subdomains, open ports, JS files, vulnerabilities, and takeovers.
-     - **Visualizations**: Bar chart for scan result distribution and pie chart for vulnerability severity.
-     - **Target Overview**: Summary of results per target.
-     - **Detailed Results**: Expandable sections for each scan type and target.
-   - Click **Refresh Dashboard** to update results after new scans.
+## 🗂️ Project Structure
 
-5. **Run Vulnerability Scans**:
-   - Use the **Scanner** page vulnerability scans you can chose between single URLs or import live hosts from a project
-<img width="1896" height="597" alt="image" src="https://github.com/user-attachments/assets/22928e06-688d-4bbd-b907-608c2b5a6b48" />
+```
+deepbug/
+├── deepbug_app.py            # Entrypoint: config, theme, sidebar + navigation
+├── requirements.txt          # Python dependencies
+├── app/
+│   ├── install.sh            # Installs external tools (go/apt/python)
+│   ├── pages/                # The 6 Streamlit pages (workflow order)
+│   ├── modules/              # Core logic
+│   │   ├── config.json       # Configuration (see below)
+│   │   ├── project_manager.py# Persistence + per-project scope manager
+│   │   ├── scanner.py        # Nuclei scan engine
+│   │   ├── recon.py          # Full-recon pipeline
+│   │   ├── reporting.py      # HTML report generation
+│   │   ├── utils.py          # Config loading, validators, parsers
+│   │   └── tools/            # 69 tool modules: scanners, validators, AI
+│   └── utils/                # Theme, logger, subprocess runner, cache, ...
+├── .streamlit/config.toml    # Theme + server settings
+├── projects/                 # Created at runtime: per-project data
+└── docs/                     # Full wiki (index: docs/README.md)
+```
 
+---
 
-## Contributing
+## ⚙️ Configuration
 
-Contributions are welcome! To contribute:
-1. Fork the repository.
-2. Create a feature branch (`git checkout -b feature/your-feature`).
-3. Commit changes (`git commit -m "Add your feature"`).
-4. Push to the branch (`git push origin feature/your-feature`).
-5. Open a pull request.
+Configuration lives in **`app/modules/config.json`**, merged over sensible defaults in `app/modules/utils.py` (environment variables like `$HOME` are expanded). Key sections:
 
-Please include tests and update documentation for new features.
+* **`project_settings.base_projects_dir`** — where projects are stored (default `./projects`).
+* **`tools.paths`** — paths to external binaries: nuclei, subfinder, httpx, nmap, masscan, katana, ffuf, gau, gf, kxss, amass, and more.
+* **`experimental`** — feature flags and tuning: `enable_ai`, `SHODAN_API_KEY`, `subprocess_timeout`, and others.
+* **`ai`** — AI Assistant settings: `enable`, `api_base`, `api_key`, `model`, `chat_base`, `chat_model`, `chat_temperature`, `chat_max_history`, `chat_max_chars`, `timeout`.
 
-## License
+---
 
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+## 🤖 Bring Your Own AI
+
+DeepBug never ships with a baked-in LLM key — instead, the AI Assistant points at **any OpenAI-compatible endpoint** (plain HTTP `POST /chat/completions`, no vendor SDK required). It works with:
+
+| Provider | Base URL | Example model |
+|----------|----------|---------------|
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| Groq | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `moonshotai/kimi-k3-free` |
+| Ollama (local) | `http://localhost:11434/v1` | `llama3.3`, `qwen2.5` |
+| LM Studio (local) | `http://localhost:1234/v1` | any model you serve |
+
+### Via `app/modules/config.json`
+
+Add an `ai` section:
+
+```json
+{
+  "ai": {
+    "enable": true,
+    "api_base": "https://api.openai.com/v1",
+    "api_key": "sk-...",
+    "model": "gpt-4o-mini",
+    "chat_base": "https://api.groq.com/openai/v1",
+    "chat_model": "llama-3.3-70b-versatile",
+    "chat_temperature": 0.3,
+    "chat_max_history": 20,
+    "chat_max_chars": 6000,
+    "timeout": 60
+  }
+}
+```
+
+You can also set the key via the **`OPENAI_API_KEY`** environment variable — DeepBug never stores your key anywhere itself.
+
+### Via the in-app UI (`/ai`)
+
+Open the **AI Assistant** page and use the *Connection* panel: paste the base URL, model name, and API key right in the form — no config file edits needed. The key is held in the session only.
+
+Then:
+
+* **💬 Chat** — talk to the model with an optional *pinned context* (paste scan results or JS code and it's attached to every message). History persists per project.
+* **📊 Analyze saved results** — pick any saved result set and run one of four modes: `summary`, `triage`, `prioritize`, or `suggest_next`. If no API key is configured, a built-in **local heuristic fallback** kicks in, so the feature is always usable offline.
+
+---
+
+## 📚 Documentation
+
+See `docs/` for the full wiki (installation, configuration, architecture, AI guide, modules, troubleshooting) — start at `docs/README.md`.
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).

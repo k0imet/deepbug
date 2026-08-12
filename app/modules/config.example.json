@@ -1,0 +1,112 @@
+{
+    "logging": {
+        "level": "INFO",
+        "file": "bugbountybot.log"
+    },
+    "project_settings": {
+        "base_projects_dir": "projects"
+    },
+    "experimental": {
+        "enable_async": false,
+        "enable_ai": true,
+        "enable_db": true,
+        "enable_resume": true,
+        "log_level": "INFO",
+        "log_file": "logs/deepbug.log",
+        "SHODAN_API_KEY": "",
+        "subprocess_timeout": 600
+    },
+    "recon_output_dir": "./recon_tmp_output",
+    "tools": {
+        "paths": {
+            "subfinder": "$HOME/go/bin/subfinder",
+            "dnsx": "$HOME/go/bin/dnsx",
+            "nuclei": "$HOME/go/bin/nuclei",
+            "nuclei_templates": "$HOME/nuclei-templates",
+            "nmap": "/usr/bin/nmap",
+            "masscan": "/usr/bin/masscan",
+            "subjs": "$HOME/go/bin/subjs",
+            "webanalyze": "$HOME/go/bin/webanalyze",
+            "httpx": "$HOME/go/bin/httpx",
+            "getjs": "$HOME/go/bin/getJS",
+            "gf": "$HOME/go/bin/gf",
+            "kxss": "$HOME/go/bin/kxss",
+            "linkfinder": "/opt/LinkFinder/linkfinder.py",
+            "fakjs": "$HOME/go/bin/fakjs",
+            "paramspider": "/usr/local/bin/paramspider",
+            "amass": "$HOME/go/bin/amass",
+            "ffuf": "$HOME/go/bin/ffuf",
+            "arjun": "$HOME/.local/bin/arjun",
+            "x8": "/usr/bin/x8",
+            "gf_patterns": "$HOME/.gf/",
+            "katana": "$HOME/go/bin/katana",
+            "gau": "$HOME/go/bin/gau",
+            "uro": "",
+            "gitb_subdomains_token_env": "GITHUB_TOKEN",
+            "playwright": "$HOME/.local/bin/playwright"
+        },
+        "rate_limits": {
+            "masscan": 1000
+        },
+        "sqltimer": {
+            "sleep_time": 5,
+            "threads": 10,
+            "timeout_multiplier": 6,
+            "timeout_buffer": 10
+        },
+        "http_smuggling": {
+            "timeout": 8,
+            "delay_threshold": 1.0,
+            "block_threshold": 3.0
+        },
+        "url_clean": {
+            "drop_blog_slugs": true,
+            "keep_values": false
+        },
+        "active_crawler": {
+            "depth": 4,
+            "threads": 10,
+            "timeout": 120
+        },
+        "screenshots": {
+            "width": 1280,
+            "height": 800,
+            "timeout_ms": 20000,
+            "max_urls": 100
+        },
+        "secret_chainer": {
+            "timeout": 12,
+            "max_checks": 30,
+            "delay": 0.3,
+            "chains": {
+                "cognito_pool": true,
+                "oauth_client_credentials": true,
+                "aws_keys": false,
+                "github_token": true,
+                "github_finegrained": true,
+                "stripe_live": true,
+                "stripe_restricted": true,
+                "slack": true,
+                "discord": true,
+                "google_api": true,
+                "twilio_token": true,
+                "mailgun_key": true,
+                "appkey_header": true
+            }
+        },
+        "config_sensitive_scanner": {
+            "timeout": 10,
+            "max_hosts": 100,
+            "user_agent": "Mozilla/5.0 (compatible; SecurityProbe/1.0)"
+        }
+    },
+    "output_formats": {
+        "default": "csv"
+    },
+    "dom_xss": {
+        "max_urls": 40,
+        "browser": true,
+        "page_timeout_ms": 8000,
+        "max_variants": 6
+    }
+}

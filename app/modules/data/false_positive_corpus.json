@@ -1,0 +1,602 @@
+{
+ "description": "Verified false positives from Qdrant JS secret scans (2026-08-11).",
+ "keyword_values": [
+  "access",
+  "api_key",
+  "apikey",
+  "auth",
+  "authorization",
+  "bearer",
+  "capability",
+  "claims",
+  "crypto",
+  "decrypt",
+  "digest",
+  "encrypt",
+  "hmac",
+  "login",
+  "logout",
+  "password",
+  "permissions",
+  "policy",
+  "private",
+  "privilege",
+  "rbac",
+  "register",
+  "registration",
+  "role",
+  "secret",
+  "token"
+ ],
+ "source_suffixes": [
+  "swagger-ui-bundle.js",
+  "bokeh-",
+  "mathjax",
+  "/vendor/",
+  "highcharts",
+  "jquery",
+  "leaflet",
+  "d3.min",
+  "react-dom",
+  "axios.min",
+  "lodash.min",
+  "underscore-min"
+ ],
+ "host_fp": [
+  "discord.qdrant.tech"
+ ],
+ "pattern_value_pairs": [
+  [
+   "webpack_define_plugin",
+   "STRIPE_KEY"
+  ],
+  [
+   "webpack_define_plugin",
+   "ADYEN_KEY"
+  ],
+  [
+   "webpack_define_plugin",
+   "BRAINTREE_KEY"
+  ],
+  [
+   "webpack_define_plugin",
+   "MUX_ENV_KEY"
+  ],
+  [
+   "webpack_define_plugin",
+   "DEV_SESSION_KEY"
+  ],
+  [
+   "webpack_define_plugin",
+   "REMOTE_AUTH_ENDPOINT"
+  ],
+  [
+   "webpack_define_plugin",
+   "WEBAUTHN_ORIGIN"
+  ],
+  [
+   "webpack_define_plugin",
+   "NATIVE_WEBSOCKET_ORIGIN"
+  ],
+  [
+   "webpack_define_plugin",
+   "authorization_code"
+  ],
+  [
+   "webpack_define_plugin",
+   "relative"
+  ]
+ ],
+ "triaged": [
+  {
+   "source": "http://code-search.qdrant.tech:80/assets/index-0b8bf027.js",
+   "pattern": "crypto",
+   "value": "encrypt"
+  },
+  {
+   "source": "http://code-search.qdrant.tech:80/assets/index-0b8bf027.js",
+   "pattern": "crypto",
+   "value": "digest"
+  },
+  {
+   "source": "http://code-search.qdrant.tech:80/assets/index-0b8bf027.js",
+   "pattern": "auth",
+   "value": "Policy"
+  },
+  {
+   "source": "http://code-search.qdrant.tech:80/assets/index-0b8bf027.js",
+   "pattern": "auth",
+   "value": "role"
+  },
+  {
+   "source": "http://code-search.qdrant.tech:80/assets/index-0b8bf027.js",
+   "pattern": "secrets",
+   "value": "SECRET"
+  },
+  {
+   "source": "http://code-search.qdrant.tech:80/assets/index-0b8bf027.js",
+   "pattern": "secrets",
+   "value": "password"
+  },
+  {
+   "source": "http://code-search.qdrant.tech:80/assets/index-0b8bf027.js",
+   "pattern": "sec",
+   "value": "SECRET"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "webpack_define_plugin",
+   "value": "relative"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "crypto",
+   "value": "hmAC"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "crypto",
+   "value": "sHa1"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "auth",
+   "value": "register"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "auth",
+   "value": "access"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "auth",
+   "value": "policy"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "auth",
+   "value": "auth"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "auth",
+   "value": "Register"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "secrets",
+   "value": "Private"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "secrets",
+   "value": "private"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "secrets",
+   "value": "token"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "secrets",
+   "value": "TOKEN"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "sec",
+   "value": "api_key"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-2.4.1.min.js",
+   "pattern": "sec",
+   "value": "api-key"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-mathjax-2.4.1.min.js",
+   "pattern": "crypto",
+   "value": "hMac"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-mathjax-2.4.1.min.js",
+   "pattern": "secrets",
+   "value": "Token"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-tables-2.4.1.min.js",
+   "pattern": "sec",
+   "value": "apikey"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-widgets-2.4.1.min.js",
+   "pattern": "auth",
+   "value": "AUTH"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-widgets-2.4.1.min.js",
+   "pattern": "auth",
+   "value": "CLAIMS"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/bokeh/bokeh-widgets-2.4.1.min.js",
+   "pattern": "secrets",
+   "value": "Password"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/viz/viz-1.8.0.min.js",
+   "pattern": "crypto",
+   "value": "crypto"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/viz/viz-1.8.0.min.js",
+   "pattern": "auth",
+   "value": "Access"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/viz/viz-1.8.0.min.js",
+   "pattern": "auth",
+   "value": "PermissionS"
+  },
+  {
+   "source": "http://dataset-quality.qdrant.tech:80/vendor/viz/viz-1.8.0.min.js",
+   "pattern": "auth",
+   "value": "Permissions"
+  },
+  {
+   "source": "http://demo.qdrant.tech:80/assets/index-edbf63b4.js",
+   "pattern": "auth",
+   "value": "authorization"
+  },
+  {
+   "source": "http://demo.qdrant.tech:80/assets/index-edbf63b4.js",
+   "pattern": "auth",
+   "value": "Authorization"
+  },
+  {
+   "source": "http://demo.qdrant.tech:80/assets/index-edbf63b4.js",
+   "pattern": "auth",
+   "value": "Auth"
+  },
+  {
+   "source": "http://demo.qdrant.tech:80/assets/index-edbf63b4.js",
+   "pattern": "auth",
+   "value": "POLICY"
+  },
+  {
+   "source": "http://demo.qdrant.tech:80/assets/index-edbf63b4.js",
+   "pattern": "secrets",
+   "value": "authorization"
+  },
+  {
+   "source": "http://demo.qdrant.tech:80/assets/index-edbf63b4.js",
+   "pattern": "secrets",
+   "value": "Authorization"
+  },
+  {
+   "source": "http://discord.qdrant.tech:80/assets/10601.a8c1a6bbf42e208c.js",
+   "pattern": "webpack_define_plugin",
+   "value": "REMOTE_AUTH_ENDPOINT"
+  },
+  {
+   "source": "http://discord.qdrant.tech:80/assets/10601.a8c1a6bbf42e208c.js",
+   "pattern": "webpack_define_plugin",
+   "value": "STRIPE_KEY"
+  },
+  {
+   "source": "http://discord.qdrant.tech:80/assets/10601.a8c1a6bbf42e208c.js",
+   "pattern": "webpack_define_plugin",
+   "value": "ADYEN_KEY"
+  },
+  {
+   "source": "http://discord.qdrant.tech:80/assets/10601.a8c1a6bbf42e208c.js",
+   "pattern": "webpack_define_plugin",
+   "value": "BRAINTREE_KEY"
+  },
+  {
+   "source": "http://discord.qdrant.tech:80/assets/10601.a8c1a6bbf42e208c.js",
+   "pattern": "webpack_define_plugin",
+   "value": "MUX_ENV_KEY"
+  },
+  {
+   "source": "http://discord.qdrant.tech:80/assets/10601.a8c1a6bbf42e208c.js",
+   "pattern": "webpack_define_plugin",
+   "value": "DEV_SESSION_KEY"
+  },
+  {
+   "source": "http://discord.qdrant.tech:80/assets/10601.a8c1a6bbf42e208c.js",
+   "pattern": "webpack_define_plugin",
+   "value": "WEBAUTHN_ORIGIN"
+  },
+  {
+   "source": "http://discord.qdrant.tech:80/assets/10601.a8c1a6bbf42e208c.js",
+   "pattern": "webpack_define_plugin",
+   "value": "NATIVE_WEBSOCKET_ORIGIN"
+  },
+  {
+   "source": "http://food-discovery.qdrant.tech:80/assets/index-29d8aa98.js",
+   "pattern": "auth",
+   "value": "rBac"
+  },
+  {
+   "source": "http://food-discovery.qdrant.tech:80/assets/index-29d8aa98.js",
+   "pattern": "sec",
+   "value": "ApiKey"
+  },
+  {
+   "source": "http://minicoil.qdrant.tech:80/assets/index-c3BAtTgR.js",
+   "pattern": "crypto",
+   "value": "Digest"
+  },
+  {
+   "source": "http://registry.cloud.qdrant.io:80/main.ef4eb96eac94d04f.js",
+   "pattern": "auth",
+   "value": "registration"
+  },
+  {
+   "source": "http://registry.cloud.qdrant.io:80/main.ef4eb96eac94d04f.js",
+   "pattern": "auth",
+   "value": "permissions"
+  },
+  {
+   "source": "http://registry.cloud.qdrant.io:80/main.ef4eb96eac94d04f.js",
+   "pattern": "auth",
+   "value": "login"
+  },
+  {
+   "source": "http://registry.cloud.qdrant.io:80/main.ef4eb96eac94d04f.js",
+   "pattern": "auth",
+   "value": "Registration"
+  },
+  {
+   "source": "http://registry.cloud.qdrant.io:80/main.ef4eb96eac94d04f.js",
+   "pattern": "auth",
+   "value": "Role"
+  },
+  {
+   "source": "http://registry.cloud.qdrant.io:80/main.ef4eb96eac94d04f.js",
+   "pattern": "auth",
+   "value": "rolE"
+  },
+  {
+   "source": "http://registry.cloud.qdrant.io:80/main.ef4eb96eac94d04f.js",
+   "pattern": "secrets",
+   "value": "PRIVATE"
+  },
+  {
+   "source": "http://registry.cloud.qdrant.io:80/scripts.3846d86d42cdb753.js",
+   "pattern": "auth",
+   "value": "Logout"
+  },
+  {
+   "source": "http://registry.cloud.qdrant.io:80/scripts.3846d86d42cdb753.js",
+   "pattern": "auth",
+   "value": "Login"
+  },
+  {
+   "source": "http://registry.cloud.qdrant.io:80/scripts.3846d86d42cdb753.js",
+   "pattern": "auth",
+   "value": "logout"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "webpack_define_plugin",
+   "value": "authorization_code"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "crypto",
+   "value": "sha256"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "crypto",
+   "value": "Crypto"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "crypto",
+   "value": "sha1"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "auth",
+   "value": "claims"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "auth",
+   "value": "LOGOUT"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "auth",
+   "value": "AUTHORIZATION"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "secrets",
+   "value": "AUTHORIZATION"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "secrets",
+   "value": "Secret"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "secrets",
+   "value": "secret"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "secrets",
+   "value": "bearer"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "secrets",
+   "value": "Bearer"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "sec",
+   "value": "AUTHORIZATION:"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "sec",
+   "value": "Authorization:"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "sec",
+   "value": "Secret"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "sec",
+   "value": "secret"
+  },
+  {
+   "source": "http://swagger.qdrant.tech:80/swagger-ui-bundle.js",
+   "pattern": "sec",
+   "value": "apiKey"
+  },
+  {
+   "source": "https://bench-dev.qdrant.tech:443/assets/index-UJRhvQ8X.js",
+   "pattern": null,
+   "value": "-----BEGIN OPENSSH PRIVATE KEY-----"
+  },
+  {
+   "source": "https://bench-dev.qdrant.tech:443/assets/index-UJRhvQ8X.js",
+   "pattern": "asymmetric-keys_secrets",
+   "value": "OPENSSH "
+  },
+  {
+   "source": "https://bench-dev.qdrant.tech:443/assets/index-UJRhvQ8X.js",
+   "pattern": "crypto",
+   "value": "decrypt"
+  },
+  {
+   "source": "https://bench-dev.qdrant.tech:443/assets/index-UJRhvQ8X.js",
+   "pattern": "auth",
+   "value": "capability"
+  },
+  {
+   "source": "https://bench-dev.qdrant.tech:443/assets/index-UJRhvQ8X.js",
+   "pattern": "sec",
+   "value": "API_KEY"
+  },
+  {
+   "source": "https://cdn.cloud.qdrant.io/static/js/entry.index.CBDu0hCx.js",
+   "pattern": "http-auth",
+   "value": "cloud-ui@1.0.0"
+  },
+  {
+   "source": "https://cdn.cloud.qdrant.io/static/js/entry.index.CBDu0hCx.js",
+   "pattern": "auth",
+   "value": "Claims"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "crypto",
+   "value": "PublicKey"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "crypto",
+   "value": "PrivateKey"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "crypto",
+   "value": "Encrypt"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "auth",
+   "value": "ACCESS"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "auth",
+   "value": "permissionS"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "auth",
+   "value": "PERMISSIONS"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "auth",
+   "value": "REGISTER"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "auth",
+   "value": "PRIVILEGE"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "auth",
+   "value": "ROLE"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "auth",
+   "value": "LOGIN"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "auth",
+   "value": "privilege"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "auth",
+   "value": "Privilege"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "auth",
+   "value": "RBAC"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "auth",
+   "value": "rbac"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "secrets",
+   "value": "PASSWORD"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "sec",
+   "value": "aws_"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/app/app.js",
+   "pattern": "sec",
+   "value": "AWS_"
+  },
+  {
+   "source": "https://teleport.cloud.qdrant.io:443/web/config.js",
+   "pattern": "crypto",
+   "value": "privateKey"
+  },
+  {
+   "source": "https://bench-dev.qdrant.tech:443/assets/index-UJRhvQ8X.js",
+   "pattern": "asymmetric-keys_secrets",
+   "value": "OPENSSH "
+  },
+  {
+   "source": "https://bench-dev.qdrant.tech:443/assets/index-UJRhvQ8X.js",
+   "pattern": null,
+   "value": "-----BEGIN OPENSSH PRIVATE KEY-----"
+  }
+ ]
+}
