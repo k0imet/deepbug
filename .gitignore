@@ -28,3 +28,6 @@ app/modules/tools/registry_cache.db
 .idea/
 *.swp
 .DS_Store
+
+# Local agent skills (machine-specific symlinks)
+.agents/
