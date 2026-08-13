@@ -109,16 +109,39 @@ class CaidoClient:
         self.pat = pat
         self.timeout = timeout
         self._http = httpx.Client(timeout=timeout)
+        self._guest_token: Optional[str] = None
 
     # ---------------------------------------------------------------- auth
-    def _gql(self, query: str, variables: Optional[Dict] = None) -> Dict:
+    def _token(self) -> Optional[str]:
+        """Return the best available token: configured PAT, else a guest token
+        obtained via the public loginAsGuest mutation (works on instances with
+        guest mode enabled — no manual PAT required)."""
+        if self.pat:
+            return self.pat
+        if self._guest_token:
+            return self._guest_token
+        try:
+            data = self._gql(
+                "mutation { loginAsGuest { token { accessToken } error { __typename } } }")
+            payload = (data.get("data") or {}).get("loginAsGuest") or {}
+            token = (payload.get("token") or {}).get("accessToken")
+            if token:
+                self._guest_token = token
+        except Exception as exc:
+            logger.debug("Caido guest login unavailable: %s", exc)
+        return self._guest_token
+
+    def _gql(self, query: str, variables: Optional[Dict] = None,
+             _with_token: bool = True) -> Dict:
         """POST a GraphQL operation; returns the JSON doc (with 'errors' if any).
 
         Raises ValueError on transport or HTTP errors.
         """
         headers = {"Content-Type": "application/json"}
-        if self.pat:
-            headers["Authorization"] = f"Bearer {self.pat}"
+        if _with_token:
+            token = self._token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
         try:
             resp = self._http.post(
                 f"{self.base_url}/graphql",
@@ -183,47 +206,53 @@ class CaidoClient:
         return ids
 
     def _create_session(self, name: str, idx: int, parts: Dict) -> str:
+        # This Caido schema (2026): createReplaySession takes
+        # requestSource.raw { connectionInfo { host, port, isTLS, SNI }, raw } and kind.
+        raw_b64 = base64.b64encode(parts["raw"].encode("utf-8")).decode("ascii")
         query = """
         mutation createReplaySession($input: CreateReplaySessionInput!) {
-          createReplaySession(input: $input) { replaySession { id } }
+          createReplaySession(input: $input) { session { id } error { __typename } }
         }
         """
         variables = {"input": {
-            "name": f"{name} {idx + 1}",
-            "host": parts["host"],
-            "port": parts["port"],
-            "tls": parts["tls"],
-            "sni": parts["sni"],
-        }}
-        data = self._gql(query, variables)
-        self._raise_graphql_errors(data)
-        try:
-            return str(data["data"]["createReplaySession"]["replaySession"]["id"])
-        except Exception as exc:
-            raise ValueError(f"Caido createReplaySession shape mismatch: {data}") from exc
-
-    def _start_replay(self, session_id: str, parts: Dict) -> None:
-        query = """
-        mutation startReplayTask($input: ReplayTaskInput!) {
-          startReplayTask(input: $input) { replayTask { id status } }
-        }
-        """
-        raw_b64 = base64.b64encode(parts["raw"].encode("utf-8")).decode("ascii")
-        variables = {"input": {
-            "replaySessionId": session_id,
-            "request": {
-                "kind": "Raw",
-                "raw": raw_b64,
-                "host": parts["host"],
-                "port": parts["port"],
-                "tls": parts["tls"],
-                "sni": parts["sni"],
+            "kind": "HTTP",
+            "requestSource": {
+                "raw": {
+                    "connectionInfo": {
+                        "host": parts["host"],
+                        "port": parts["port"],
+                        "isTLS": parts["tls"],
+                        "SNI": parts["sni"],
+                    },
+                    "raw": raw_b64,
+                },
             },
         }}
         data = self._gql(query, variables)
         self._raise_graphql_errors(data)
         try:
-            task = data["data"]["startReplayTask"]["replayTask"]
+            payload = data["data"]["createReplaySession"]
+            if payload.get("error"):
+                raise ValueError(f"Caido createReplaySession error: {payload['error']}")
+            return str(payload["session"]["id"])
+        except Exception as exc:
+            raise ValueError(f"Caido createReplaySession shape mismatch: {data}") from exc
+
+    def _start_replay(self, session_id: str, parts: Dict) -> None:
+        # This schema passes sessionId as a direct argument (no `input` wrapper),
+        # and ReplayTask has no `status` field.
+        query = """
+        mutation startReplayTask($sessionId: ID!) {
+          startReplayTask(sessionId: $sessionId) { task { id } error { __typename } }
+        }
+        """
+        data = self._gql(query, {"sessionId": session_id})
+        self._raise_graphql_errors(data)
+        try:
+            payload = data["data"]["startReplayTask"]
+            if payload.get("error"):
+                raise ValueError(f"Caido startReplayTask error: {payload['error']}")
+            task = payload.get("task") or {}
         except Exception as exc:
             raise ValueError(f"Caido startReplayTask shape mismatch: {data}") from exc
         logger.debug("Caido replay task started: id=%s status=%s",
@@ -231,17 +260,32 @@ class CaidoClient:
 
     # ------------------------------------------------------------- history
     def fetch_history(self, limit: int = 200, filter: str = "") -> List[Dict]:
-        """Fetch recent request.list entries normalized to
-        {"url","method","status","id"}. Defensive — never raises."""
-        query = """
-        query requestList($filter: String, $limit: Int) {
-          request.list(filter: $filter, limit: $limit, offset: 0) {
-            requests { id request }
-          }
-        }
+        """Fetch recent requests normalized to {"url","method","status","id"}.
+        Defensive — never raises. Requires auth (PAT or guest token).
+
+        Note: the schema's `filter` arg is an HTTPQLInput object, not a string;
+        it is simply omitted when no filter is requested.
         """
+        if filter:
+            query = """
+            query requestsList($first: Int, $filter: HTTPQLInput) {
+              requests(first: $first, filter: $filter) {
+                nodes { id host method path query isTls port }
+              }
+            }
+            """
+            variables = {"first": limit, "filter": {"query": filter}}
+        else:
+            query = """
+            query requestsList($first: Int) {
+              requests(first: $first) {
+                nodes { id host method path query isTls port }
+              }
+            }
+            """
+            variables = {"first": limit}
         try:
-            data = self._gql(query, {"filter": filter, "limit": limit})
+            data = self._gql(query, variables)
         except Exception as exc:
             logger.warning("Caido fetch_history failed: %s", exc)
             return []
@@ -249,17 +293,39 @@ class CaidoClient:
             logger.warning("Caido fetch_history GraphQL errors: %s", data["errors"])
             return []
         try:
-            requests = data["data"]["request.list"]["requests"]
+            nodes = data["data"]["requests"]["nodes"] or []
         except Exception:
-            requests = []
-        return _extract_urls(requests)
+            nodes = []
+        out = []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            host = node.get("host") or ""
+            scheme = "https" if node.get("isTls") else "http"
+            port = node.get("port") or (443 if node.get("isTls") else 80)
+            path = node.get("path") or "/"
+            q = node.get("query") or ""
+            if q:
+                path += ("?" + q) if "?" not in path else ("&" + q)
+            url = f"{scheme}://{host}:{port}{path}" if port not in (80, 443) else f"{scheme}://{host}{path}"
+            out.append({
+                "id": str(node.get("id") or ""),
+                "url": url,
+                "method": str(node.get("method") or ""),
+                "status": "",
+            })
+        return out
 
     # --------------------------------------------------------------- misc
     def health(self) -> bool:
-        """Lightweight reachability + auth check (best-effort)."""
+        """Reachability + auth check: introspection, then token acquisition."""
         try:
-            data = self._gql("{ currentUser { username } }")
-            return "errors" not in data
+            data = self._gql("{ __schema { queryType { name } } }")
+            if "errors" in data:
+                return False
+            # Attempt token acquisition so subsequent ops are authorized.
+            self._token()
+            return True
         except Exception:
             return False
 
