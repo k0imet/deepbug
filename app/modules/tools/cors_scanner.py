@@ -41,9 +41,10 @@ class CORSHeadersScanner:
                     allow_redirects=False
                 )
 
-                # Collect headers
-                base_headers = dict(resp_base.headers)
-                origin_headers = dict(resp_origin.headers)
+                # Collect headers - 'requests' preserves header case, so normalize
+                # to lowercase keys for case-insensitive lookups below.
+                base_headers = {k.lower(): v for k, v in resp_base.headers.items()}
+                origin_headers = {k.lower(): v for k, v in resp_origin.headers.items()}
 
                 # Check CORS
                 cors_info = {

@@ -11,6 +11,7 @@ if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
 from app.utils.url_utils import urlparse
+from urllib.parse import parse_qs
 from app.modules.project_manager import ProjectManager
 from app.modules.utils import load_config, setup_logging, validate_domain, validate_ip, is_valid_url
 from app.modules.tools.subdomain_scanner import SubdomainScanner
@@ -36,6 +37,17 @@ from app.modules.tools.supply_chain_auditor import SupplyChainAuditor
 from app.modules.tools.url_cleaner import URLCleaner
 from app.modules.tools.wayback_url_hunter import WaybackURLHunter
 from app.modules.tools.active_crawler import ActiveCrawler
+from app.modules.tools.asn_dns_osint import ASNDNSOsint
+from app.modules.tools.github_subdomains import GitHubSubdomains
+from app.modules.tools.config_sensitive_scanner import ConfigSensitiveScanner
+from app.modules.tools.open_redirect_scanner import OpenRedirectScanner
+from app.modules.tools.git_disclosure_scanner import GitDisclosureScanner
+from app.modules.tools.jwt_scanner import JWTScanner
+from app.modules.tools.auth_gateway_scanner import AuthGatewayScanner
+from app.modules.tools.bypass_403 import Bypass403Engine
+from app.modules.tools.github_leak_scanner import GitHubLeakScanner
+from app.modules.tools.classifier import classify_and_rank
+from app.modules.tools.secret_chainer import SecretChainer
 from app.modules.recon import Reconnaissance
 
 from app.utils.ui_helpers import render_df, analysis_result
@@ -145,6 +157,16 @@ csti_scanner = CSTIScanner(CONFIG)
 supply_chain_auditor = SupplyChainAuditor(CONFIG)
 url_cleaner = URLCleaner(CONFIG)
 recon_runner = Reconnaissance(CONFIG)
+asn_osint_scanner = ASNDNSOsint(CONFIG)
+github_subdomains_scanner = GitHubSubdomains(CONFIG)
+config_sensitive_scanner = ConfigSensitiveScanner(CONFIG)
+open_redirect_scanner = OpenRedirectScanner(CONFIG)
+git_disclosure_scanner = GitDisclosureScanner(CONFIG)
+jwt_scanner = JWTScanner()
+auth_gateway_scanner = AuthGatewayScanner()
+bypass403_engine = Bypass403Engine(CONFIG)
+github_leak_scanner = GitHubLeakScanner(CONFIG)
+secret_chainer = SecretChainer(CONFIG)
 
 js_analyzer.scope_hosts = {target_domain}
 
@@ -377,6 +399,77 @@ with tab1:
         st.markdown("**Stored Takeover Findings**")
         st.dataframe(takeover_df, use_container_width=True)
 
+    # ---- ASN & DNS OSINT ----
+    st.markdown("---")
+    asn_df = project_manager.load_scan_results('asn_osint', target_domain)
+    if isinstance(asn_df, pd.DataFrame) and not asn_df.empty:
+        with st.expander(f"🛰️ ASN & DNS OSINT ({len(asn_df)})"):
+            st.dataframe(asn_df, use_container_width=True)
+    with st.expander("🛰️ Run ASN & DNS OSINT"):
+        st.caption("Keyless passive OSINT: BGPView ASN/prefix mapping, Hackertarget reverse lookups and "
+                   "DoH SPF/DMARC/DKIM/MX queries — finds origin IPs and infrastructure behind CDNs.")
+        if st.button("🛰️ Run", key="asn_osint_run"):
+            with st.spinner("Querying BGPView / DoH / reverse lookups..."):
+                try:
+                    res = asn_osint_scanner.scan_sync(target_domain)
+                    rows = []
+                    for a in res.get('asns', []):
+                        rows.append({'Type': 'ASN', 'Value': a.get('asn', ''), 'Detail': a.get('org', '')})
+                    for ip in res.get('origin_ips', []):
+                        rows.append({'Type': 'Origin IP', 'Value': ip, 'Detail': 'apex A record'})
+                    for rng in res.get('ipv4_ranges', []):
+                        rows.append({'Type': 'IPv4 Range', 'Value': rng, 'Detail': 'ASN prefix'})
+                    for rng in res.get('ipv6_ranges', []):
+                        rows.append({'Type': 'IPv6 Range', 'Value': rng, 'Detail': 'ASN prefix'})
+                    spf = res.get('spf', {})
+                    if spf.get('record'):
+                        rows.append({'Type': 'SPF', 'Value': spf['record'], 'Detail': f"all={spf.get('all', '')}"})
+                    for inc in spf.get('include', []):
+                        rows.append({'Type': 'SPF Include', 'Value': inc, 'Detail': ''})
+                    for h in res.get('mx_hosts', []):
+                        rows.append({'Type': 'MX Host', 'Value': h, 'Detail': ''})
+                    dmarc = res.get('dmarc', {})
+                    if dmarc.get('record'):
+                        rows.append({'Type': 'DMARC', 'Value': dmarc['record'],
+                                     'Detail': f"p={dmarc.get('p', '')}"})
+                    for dk in res.get('dkim', []):
+                        rows.append({'Type': 'DKIM', 'Value': dk.get('selector', ''),
+                                     'Detail': (dk.get('record') or '')[:120]})
+                    new_asn_df = pd.DataFrame(rows)
+                    if not new_asn_df.empty:
+                        project_manager.save_scan_results('asn_osint', target_domain, new_asn_df)
+                        st.success(f"ASN/DNS OSINT complete — {len(new_asn_df)} records ({res.get('totals', {})})")
+                        st.dataframe(new_asn_df, use_container_width=True)
+                    else:
+                        st.info("No ASN/DNS OSINT data returned.")
+                except Exception as e:
+                    st.error(f"ASN & DNS OSINT failed: {e}")
+
+    # ---- GitHub Subdomain OSINT ----
+    st.markdown("---")
+    gh_sub_df = project_manager.load_scan_results('github_subdomains', target_domain)
+    if isinstance(gh_sub_df, pd.DataFrame) and not gh_sub_df.empty:
+        with st.expander(f"🐙 GitHub Subdomain OSINT ({len(gh_sub_df)})"):
+            st.dataframe(gh_sub_df, use_container_width=True)
+    with st.expander("🐙 Run GitHub Subdomain OSINT"):
+        st.caption("Queries the public GitHub search API (repo/commit metadata) for hostnames of this apex. "
+                   "No token needed; code search requires GITHUB_TOKEN.")
+        if st.button("🐙 Run", key="github_subdomains_run"):
+            with st.spinner("Querying GitHub search API..."):
+                try:
+                    res = github_subdomains_scanner.scan_sync(target_domain)
+                    subs = res.get('subdomains', [])
+                    new_gh_df = pd.DataFrame({'Subdomain': subs, 'Source': ['GitHub'] * len(subs)}) \
+                        if subs else pd.DataFrame(columns=['Subdomain', 'Source'])
+                    if not new_gh_df.empty:
+                        project_manager.save_scan_results('github_subdomains', target_domain, new_gh_df)
+                        st.success(f"Found {len(subs)} GitHub-derived subdomains ({res.get('sources')})")
+                        st.dataframe(new_gh_df, use_container_width=True)
+                    else:
+                        st.info("No subdomains found via GitHub metadata.")
+                except Exception as e:
+                    st.error(f"GitHub subdomain OSINT failed: {e}")
+
 # =====================================================================
 # TAB 2: Port & Service Scan
 # =====================================================================
@@ -516,21 +609,41 @@ with tab3:
         "🧪 PP Validation", "🖥️ DOM XSS", "🌐 CORS", "↩️ Open Redirect", "📡 SSRF"
     ])
 
-    # Preload all stored frames once
-    frameworks_df = project_manager.load_scan_results('js_frameworks', target_domain)
-    proto_df = project_manager.load_scan_results('js_prototype_pollution', target_domain)
-    dangerous_df = project_manager.load_scan_results('js_dangerous_patterns', target_domain)
-    secrets_df = project_manager.load_scan_results('js_sensitive_data_findings', target_domain)
-    priority_df = project_manager.load_scan_results('js_priority_endpoints', target_domain)
-    clobber_df = project_manager.load_scan_results('js_dom_clobbering', target_domain)
-    postmsg_df = project_manager.load_scan_results('js_postmessage_issues', target_domain)
-    jsonp_df = project_manager.load_scan_results('js_jsonp_endpoints', target_domain)
-    rendering_df = project_manager.load_scan_results('js_dynamic_rendering', target_domain)
-    csp_df = project_manager.load_scan_results('js_csp_gadgets', target_domain)
-    endpoints_df = project_manager.load_scan_results('js_discovered_endpoints', target_domain)
-    graphql_df = project_manager.load_scan_results('js_graphql_endpoints', target_domain)
-    ws_df = project_manager.load_scan_results('js_websocket_endpoints', target_domain)
-    maps_df = project_manager.load_scan_results('js_source_maps', target_domain)
+    # Preload all stored frames once. Individual js_* keys are written by the
+    # page's own runs; the combined nested 'js_analysis' dict is written by the
+    # Full Recon pipeline / legacy runs — fall back to it so data always renders.
+    _js_nested = project_manager.load_scan_results('js_analysis', target_domain)
+
+    def _load_js(key: str, sub: str = '') -> pd.DataFrame:
+        df = project_manager.load_scan_results(key, target_domain)
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            if isinstance(_js_nested, dict) and (sub or key) in _js_nested:
+                df = _js_nested[sub or key]
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return df
+        df = df.copy()
+        # Normalize URL-ish columns so the display guards work regardless of
+        # which writer produced the frame.
+        if key == 'js_discovered_endpoints' and 'endpoint' not in df.columns and 'URL' in df.columns:
+            df = df.rename(columns={'URL': 'endpoint'})
+        if key == 'js_files' and 'url' not in df.columns and 'URL' in df.columns:
+            df = df.rename(columns={'URL': 'url'})
+        return df
+
+    frameworks_df = _load_js('js_frameworks', 'js_frameworks')
+    proto_df = _load_js('js_prototype_pollution', 'js_prototype_pollution')
+    dangerous_df = _load_js('js_dangerous_patterns', 'js_dangerous_patterns')
+    secrets_df = _load_js('js_sensitive_data_findings', 'js_sensitive_data_findings')
+    priority_df = _load_js('js_priority_endpoints', 'js_priority_endpoints')
+    clobber_df = _load_js('js_dom_clobbering', 'js_dom_clobbering')
+    postmsg_df = _load_js('js_postmessage_issues', 'js_postmessage_issues')
+    jsonp_df = _load_js('js_jsonp_endpoints', 'js_jsonp_endpoints')
+    rendering_df = _load_js('js_dynamic_rendering', 'js_dynamic_rendering')
+    csp_df = _load_js('js_csp_gadgets', 'js_csp_gadgets')
+    endpoints_df = _load_js('js_discovered_endpoints', 'js_discovered_endpoints')
+    graphql_df = _load_js('js_graphql_endpoints', 'js_graphql_endpoints')
+    ws_df = _load_js('js_websocket_endpoints', 'js_websocket_endpoints')
+    maps_df = _load_js('js_source_maps', 'js_source_maps')
 
     def _has(df):
         return isinstance(df, pd.DataFrame) and not df.empty
@@ -578,6 +691,70 @@ with tab3:
             st.dataframe(display_df, use_container_width=True)
             st.download_button("📥 Download Secrets", secrets_df.to_csv(index=False),
                                f"{target_domain}_secrets.csv", "text/csv", key="dl_js_secrets")
+
+        # ---- JWT audit ----
+        jwt_df = project_manager.load_scan_results('jwt_audit', target_domain)
+        if _has(jwt_df):
+            with st.expander(f"🔐 JWT Audit ({len(jwt_df)})"):
+                st.dataframe(jwt_df, use_container_width=True)
+        with st.expander("🔐 Run JWT Audit"):
+            st.caption("Fetches JS files and audits any JWT-looking tokens found: decodes header/payload, "
+                       "flags alg=none and offline-cracks HS256 tokens against a weak-key list. "
+                       "Forged tokens are never sent anywhere.")
+            js_files_df = project_manager.load_scan_results('js_files', target_domain)
+            js_file_urls = []
+            if isinstance(js_files_df, pd.DataFrame) and 'url' in js_files_df.columns:
+                js_file_urls = [u for u in js_files_df['url'].tolist() if is_valid_url(u)]
+            if not js_file_urls:
+                js_file_urls = [u for u in urls if is_valid_url(u)]
+            st.caption(f"{len(js_file_urls)} candidate JS/URL(s) queued.")
+            if st.button("🔐 Run JWT Audit", key="jwt_audit_run"):
+                if not js_file_urls:
+                    st.info("No JS file URLs. Run JS Analysis first.")
+                else:
+                    with st.spinner("Fetching and auditing JWTs..."):
+                        try:
+                            rows = jwt_scanner.scan_sync(js_file_urls)
+                            new_jwt_df = pd.DataFrame(rows) if rows else pd.DataFrame()
+                            if not new_jwt_df.empty:
+                                project_manager.save_scan_results('jwt_audit', target_domain, new_jwt_df)
+                                cracked = int((new_jwt_df['cracked_key'].astype(str) != '').sum())
+                                if cracked:
+                                    st.error(f"🔑 {cracked} FORGEABLE JWT(s) — weak signing key cracked!")
+                                st.dataframe(new_jwt_df, use_container_width=True)
+                            else:
+                                st.info("No JWTs found in the fetched bodies.")
+                        except Exception as e:
+                            st.error(f"JWT audit failed: {e}")
+
+        # ---- Secret chain validation ----
+        chain_df = project_manager.load_scan_results('secret_chain', target_domain)
+        if _has(chain_df):
+            with st.expander(f"🔗 Secret Chain Validation ({len(chain_df)})"):
+                st.dataframe(chain_df, use_container_width=True)
+        with st.expander("🔗 Run Secret Chain Validation"):
+            st.caption("Takes the top leaked-secret candidates and performs ONE read-only probe against each "
+                       "provider API (GitHub/Stripe/Slack/Twilio/Google...). No writes, no brute-force.")
+            if st.button("🔗 Run", key="secret_chain_run"):
+                secret_rows = secrets_df.head(10).to_dict('records') if _has(secrets_df) else []
+                if not secret_rows:
+                    st.info("No secrets to validate — run JS Analysis first.")
+                else:
+                    with st.spinner(f"Validating {len(secret_rows)} secrets against provider APIs..."):
+                        try:
+                            res = secret_chainer.scan_sync(secret_rows)
+                            scanned = res.get('scanned', [])
+                            new_chain_df = pd.DataFrame(scanned) if scanned else pd.DataFrame()
+                            verified = len(res.get('findings', []))
+                            if not new_chain_df.empty:
+                                project_manager.save_scan_results('secret_chain', target_domain, new_chain_df)
+                                if verified:
+                                    st.error(f"🚨 {verified} LIVE secret(s) confirmed — rotate immediately!")
+                                st.dataframe(new_chain_df, use_container_width=True)
+                            else:
+                                st.info("No secrets had a matching validation chain.")
+                        except Exception as e:
+                            st.error(f"Secret chain validation failed: {e}")
 
         if _has(dangerous_df):
             st.markdown("#### ☠️ Dangerous Patterns")
@@ -1007,6 +1184,107 @@ with tab4:
         with st.expander(f"Stored CSTI Results ({len(csti_df)})"):
             st.dataframe(csti_df, use_container_width=True)
 
+    # ---- Sensitive Config Exposure ----
+    st.markdown("---")
+    st.subheader("⚙️ Sensitive Config Exposure")
+    cfg_sens_df = project_manager.load_scan_results('config_sensitive', target_domain)
+    if isinstance(cfg_sens_df, pd.DataFrame) and not cfg_sens_df.empty:
+        with st.expander(f"Stored Config Exposure Results ({len(cfg_sens_df)})"):
+            st.dataframe(cfg_sens_df, use_container_width=True)
+    with st.expander("⚙️ Run Sensitive Config Exposure"):
+        st.caption("Probes actuator/env/.env/swagger paths on live origins — a row becomes a finding only "
+                   "with hard evidence markers in the body (propertySources, sensitive KEY=value...).")
+        cfg_live_df = project_manager.load_scan_results('live_hosts', target_domain)
+        cfg_urls = []
+        if isinstance(cfg_live_df, pd.DataFrame) and 'URL' in cfg_live_df.columns:
+            cfg_urls = [u for u in cfg_live_df['URL'].tolist() if is_valid_url(u)]
+        if not cfg_urls:
+            manual_cfg = st.text_input("Comma-separated URLs:", key="config_sensitive_urls")
+            cfg_urls = [u.strip() for u in manual_cfg.split(",") if is_valid_url(u.strip())]
+        st.caption(f"{len(cfg_urls)} live host URL(s) queued.")
+        if st.button("⚙️ Run", key="config_sensitive_run"):
+            if not cfg_urls:
+                st.info("No live hosts found. Run subdomain scan first or paste URLs above.")
+            else:
+                with st.spinner("Probing sensitive config paths..."):
+                    try:
+                        res = config_sensitive_scanner.scan_sync(cfg_urls)
+                        new_cfg_df = pd.DataFrame(res.get('rows', []))
+                        if not new_cfg_df.empty:
+                            project_manager.save_scan_results('config_sensitive', target_domain, new_cfg_df)
+                            findings = len(res.get('findings', []))
+                            if findings:
+                                st.error(f"🚨 {findings} evidence-backed exposure(s) found!")
+                            st.dataframe(new_cfg_df, use_container_width=True)
+                        else:
+                            st.info("No config endpoints probed.")
+                    except Exception as e:
+                        st.error(f"Config exposure scan failed: {e}")
+
+    # ---- Open Redirect Candidates ----
+    st.markdown("---")
+    st.subheader("↩️ Open Redirect Candidates")
+    or_df = project_manager.load_scan_results('open_redirect_candidates', target_domain)
+    if isinstance(or_df, pd.DataFrame) and not or_df.empty:
+        with st.expander(f"Stored Open Redirect Candidates ({len(or_df)})"):
+            st.dataframe(or_df, use_container_width=True)
+    with st.expander("↩️ Run Open Redirect Scan"):
+        st.caption(f"Swaps redirect-style param values with the canary host `{open_redirect_scanner.canary}` "
+                   "and flags any response that echoes it — passive, in-scope only.")
+        if st.button("↩️ Run", key="open_redirect_run"):
+            with st.spinner("Probing redirect parameters..."):
+                try:
+                    res = open_redirect_scanner.scan_sync(urls)
+                    new_or_df = pd.DataFrame(res.get('findings', []))
+                    if not new_or_df.empty:
+                        project_manager.save_scan_results('open_redirect_candidates', target_domain, new_or_df)
+                        st.success(f"Found {len(new_or_df)} open-redirect candidates!")
+                        st.dataframe(new_or_df, use_container_width=True)
+                    else:
+                        st.info(f"No redirect candidates on {res.get('totals', {}).get('urls', 0)} tested URLs.")
+                except Exception as e:
+                    st.error(f"Open redirect scan failed: {e}")
+
+    # ---- Git Disclosure ----
+    st.markdown("---")
+    st.subheader("🗂️ Git Disclosure")
+    git_df = project_manager.load_scan_results('git_disclosure', target_domain)
+    if isinstance(git_df, pd.DataFrame) and not git_df.empty:
+        with st.expander(f"Stored Git Disclosure Results ({len(git_df)})"):
+            st.dataframe(git_df, use_container_width=True)
+    with st.expander("🗂️ Run Git Disclosure Scan"):
+        st.caption("Probes `/.git/HEAD` on each base origin and walks the commit/tree/blob chain to pull "
+                   "high-value files (.env, credentials, keys) — a limited git-dumper-lite.")
+        if st.button("🗂️ Run", key="git_disclosure_run"):
+            with st.spinner("Probing .git directories..."):
+                try:
+                    res = git_disclosure_scanner.scan_sync(urls)
+                    rows = []
+                    for r in res.get('results', []):
+                        if r.get('exposed'):
+                            for f in r.get('files', []):
+                                rows.append({
+                                    'Base': r.get('base', ''), 'Branch': r.get('branch', ''),
+                                    'Exposed': True, 'File': f.get('path', ''),
+                                    'Secrets': ', '.join(f.get('secrets', [])),
+                                    'Snippet': f.get('snippet', '')[:160],
+                                })
+                        else:
+                            rows.append({'Base': r.get('base', ''), 'Branch': '', 'Exposed': False,
+                                         'File': '', 'Secrets': '', 'Snippet': r.get('note', '')})
+                    new_git_df = pd.DataFrame(rows)
+                    exposed = res.get('totals', {}).get('exposed', 0)
+                    if not new_git_df.empty or exposed:
+                        project_manager.save_scan_results('git_disclosure', target_domain, new_git_df)
+                        if exposed:
+                            st.error(f"🚨 {exposed} exposed .git repository(ies) — full source disclosure!")
+                        st.success(f"Git disclosure scan complete: {res.get('totals', {})}")
+                        st.dataframe(new_git_df, use_container_width=True)
+                    else:
+                        st.info("No git disclosure findings.")
+                except Exception as e:
+                    st.error(f"Git disclosure scan failed: {e}")
+
 # =====================================================================
 # TAB 5: Cloud & Infra
 # =====================================================================
@@ -1131,6 +1409,40 @@ with tab6:
     with opt3:
         manual_pm_urls = st.text_area("Extra URLs (one per line):", height=68, key="pm_manual_urls")
 
+    if x8_path:
+        xc1, xc2 = st.columns(2)
+        with xc1:
+            x8_conc = st.slider("x8 concurrency (requests/URL):", 3, 40,
+                                int(CONFIG.get('param_miner', {}).get('x8_concurrency', 15)),
+                                key="pm_x8_conc", help="Per-URL parallelism. Lower it on WAF-fronted targets.")
+        with xc2:
+            x8_procs = st.slider("Parallel x8 processes:", 1, 8,
+                                 int(CONFIG.get('param_miner', {}).get('x8_processes', 4)),
+                                 key="pm_x8_procs", help="How many URLs are fuzzed at once.")
+        t1, t2 = st.columns([2, 3])
+        with t1:
+            test_x8 = st.button("🧪 Test x8 (raw output)", key="pm_test_x8",
+                                help="Run x8 once against the first URL and show its raw stdout + parsed JSON - "
+                                     "proves the binary, flags and parser all work.")
+        with t2:
+            st.caption("Diagnose x8 before a full run: shows the exact console output and parsed findings.")
+        if test_x8:
+            test_url = urls[0] if urls else f"https://{target_domain}"
+            with st.spinner(f"Running x8 self-test against {test_url}..."):
+                diag = param_miner.x8_self_test(test_url)
+            if diag.get('ok'):
+                st.success(f"x8 self-test passed (exit {diag.get('exit_code')}) — binary, flags and parser OK.")
+            else:
+                st.error(f"x8 self-test failed: {diag.get('error') or diag.get('stderr')}")
+            with st.expander("🧪 Raw x8 output", expanded=True):
+                st.caption(f"Command: `x8 -u {test_url} -w <wordlist> -X GET -c 5 -O json`")
+                if diag.get('stdout'):
+                    st.text(diag['stdout'][-1500:])
+                if diag.get('stderr'):
+                    st.warning(diag['stderr'][-800:])
+                if diag.get('json_output'):
+                    st.json(diag['json_output'])
+
     fuzz_urls = list(urls)
     if manual_pm_urls.strip():
         fuzz_urls.extend(u.strip() for u in manual_pm_urls.splitlines() if is_valid_url(u.strip()))
@@ -1140,6 +1452,8 @@ with tab6:
 
     if st.button("🔑 Run Parameter Mining", key="run_param_miner"):
         param_miner.enable_osint = enable_osint and bool(ps_path)
+        param_miner.x8_concurrency = x8_conc if x8_path else param_miner.x8_concurrency
+        param_miner.x8_processes = x8_procs if x8_path else param_miner.x8_processes
         with st.spinner("Mining parameters..."):
             progress = st.progress(0.0, text="Starting...")
             try:
@@ -1159,7 +1473,9 @@ with tab6:
                         for p in params:
                             rows.append({
                                 'URL': url,
+                                'Method': p.get('method', 'GET'),
                                 'Parameter': p['parameter'],
+                                'Injection': p.get('injection_place', ''),
                                 'Value': p.get('value') or '',
                                 'Status': p.get('status', ''),
                                 'Reason': p.get('reason', ''),
@@ -1167,6 +1483,8 @@ with tab6:
                             })
                     df = pd.DataFrame(rows)
                     st.dataframe(df, use_container_width=True)
+                    st.caption("`Injection` = where the parameter lives (Path/Query/Body/Header) · `Reason` = why x8 flagged it "
+                               "(e.g. Reflected, status/size delta). Copy the URL into Burp/Caido to validate.")
                     project_manager.save_scan_results('param_miner', target_domain, df)
                     csv = df.to_csv(index=False)
                     st.download_button("📥 Download CSV", csv, f"{target_domain}_params.csv", "text/csv", key="dl_param_miner")
@@ -1179,24 +1497,53 @@ with tab6:
                         bl = stats['x8_baselines']
                         st.caption("x8 baseline responses: " + " | ".join(f"`{code}` × {n}" for code, n in sorted(bl.items())))
 
+                # Always show run stats - "did x8 actually run, and what did it say?"
+                st.caption(
+                    f"⚙️ Run stats: engine=`{stats.get('engine', '?')}` · "
+                    f"{stats.get('urls_tested', 0)} URLs fuzzed · "
+                    f"{stats.get('total_params', 0)} params found · "
+                    f"wordlist={stats.get('wordlist_size', 0)} · "
+                    f"OSINT params={stats.get('historical_params', 0)} · "
+                    f"tool errors={len(errors)}"
+                )
+                x8_out = getattr(param_miner, '_x8_stdout', {})
+                if x8_out and stats.get('engine') == 'x8':
+                    with st.expander(f"🩺 x8 console output ({len(x8_out)} URLs)"):
+                        for u, tail in list(x8_out.items())[:10]:
+                            st.caption(u)
+                            st.code(tail, language="text")
+
                 # ---- Historical OSINT yield (ParamSpider / Wayback) ----
                 # On WAF-fronted targets this is often the ONLY yield - always show it.
+                # Params are joined to the exact archived URLs they appeared on,
+                # so they are actionable (not a bare list of names).
                 hist_params = getattr(param_miner, 'last_historical_params', [])
                 hist_urls = getattr(param_miner, 'last_historical_urls', [])
-                if hist_params:
-                    with st.expander(f"🕰️ Historical parameters from Wayback ({len(hist_params)})", expanded=not results):
-                        st.caption("Seen on real archived URLs of this target - feed these to GF/kxss or test them manually.")
-                        st.dataframe(pd.DataFrame({'Parameter': hist_params}), use_container_width=True)
-                        st.download_button("📥 Download historical params", "\n".join(hist_params),
-                                           f"{target_domain}_historical_params.txt", "text/plain", key="dl_hist_params")
-                if hist_urls:
-                    hist_df = pd.DataFrame({'URL': hist_urls})
+                hist_pairs = []
+                for u in hist_urls:
+                    try:
+                        parsed = urlparse(u)
+                        for name, vals in parse_qs(parsed.query).items():
+                            hist_pairs.append({
+                                'URL': u,
+                                'Parameter': name,
+                                'Sample Value': vals[0] if vals else '',
+                            })
+                    except Exception:
+                        continue
+                if hist_pairs:
+                    hist_df = pd.DataFrame(hist_pairs).drop_duplicates(subset=['URL', 'Parameter'])
                     project_manager.save_scan_results('param_miner_historical', target_domain, hist_df)
-                    st.caption(f"💾 {len(hist_urls)} archived URLs saved - they now feed the Vulnerability Detection tab.")
-                    with st.expander(f"🔗 Archived URLs with parameters ({len(hist_urls)})"):
+                    with st.expander(f"🕰️ Historical params from Wayback ({len(hist_df)} on {len(hist_urls)} archived URLs)",
+                                     expanded=not results):
+                        st.caption("Each row shows the exact archived URL the parameter was seen on - paste it into "
+                                   "Burp/Caido or feed to GF/kxss. Also saved to disk for the Vulnerability Detection tab.")
                         st.dataframe(hist_df, use_container_width=True)
-                        st.download_button("📥 Download URLs", hist_df.to_csv(index=False),
-                                           f"{target_domain}_historical_urls.csv", "text/csv", key="dl_hist_urls")
+                        st.download_button("📥 Download historical params (URL + param)",
+                                           hist_df.to_csv(index=False),
+                                           f"{target_domain}_historical_params.csv", "text/csv", key="dl_hist_params")
+                elif hist_params:
+                    st.caption(f"🕰️ {len(hist_params)} historical parameter names seen (no query-string URLs retained).")
 
                 # Diagnostics: why did/didn't it work
                 if stats or errors:
@@ -1504,3 +1851,149 @@ with tab8:
     if isinstance(ma_df, pd.DataFrame) and not ma_df.empty:
         with st.expander(f"Stored Mass Assignment Results ({len(ma_df)})"):
             st.dataframe(ma_df, use_container_width=True)
+
+    # ---- Auth Gateway Probes ----
+    st.markdown("---")
+    st.markdown("### 🚪 Auth Gateway Probes")
+    st.caption("Probes the legacy-protocol matrix (xmlrpc, OWA, actuator, Tomcat manager...) on each origin — "
+               "a non-404 answer means an auth gateway may be bypassable via protocol confusion. GET-only.")
+    ag_df = project_manager.load_scan_results('auth_gateway', target_domain)
+    if isinstance(ag_df, pd.DataFrame) and not ag_df.empty:
+        with st.expander(f"Stored Auth Gateway Probes ({len(ag_df)})"):
+            st.dataframe(ag_df, use_container_width=True)
+    ag_urls = []
+    ag_live = project_manager.load_scan_results('live_hosts', target_domain)
+    if isinstance(ag_live, pd.DataFrame) and 'URL' in ag_live.columns:
+        for u in ag_live['URL'].tolist():
+            p = urlparse(u)
+            base = f"{p.scheme}://{p.netloc}"
+            if base not in ag_urls:
+                ag_urls.append(base)
+    if not ag_urls:
+        ag_urls = [f"https://{target_domain}", f"http://{target_domain}"]
+    st.caption(f"{len(ag_urls)} origin(s) queued.")
+    if st.button("🚪 Run Auth Gateway Probes", key="auth_gateway_run"):
+        with st.spinner("Probing legacy protocol endpoints..."):
+            try:
+                rows = auth_gateway_scanner.scan_sync(ag_urls)
+                new_ag_df = pd.DataFrame(rows) if rows else pd.DataFrame()
+                if not new_ag_df.empty:
+                    project_manager.save_scan_results('auth_gateway', target_domain, new_ag_df)
+                    alive = int(new_ag_df['alive'].sum())
+                    st.success(f"{len(new_ag_df)} responding endpoint(s), {alive} alive")
+                    st.dataframe(new_ag_df, use_container_width=True)
+                else:
+                    st.info("No legacy endpoints answered.")
+            except Exception as e:
+                st.error(f"Auth gateway probe failed: {e}")
+
+    # ---- 403 Bypass ----
+    st.markdown("---")
+    st.markdown("### 🛡️ 403 Bypass")
+    st.caption("Header spoofs (X-Original-URL, X-Forwarded-Host...) and path mutations against 401/403/405 "
+               "endpoints — flags when the status leaves the deny set. Purely passive probing.")
+    b403_df = project_manager.load_scan_results('bypass403', target_domain)
+    if isinstance(b403_df, pd.DataFrame) and not b403_df.empty:
+        with st.expander(f"Stored 403 Bypass Results ({len(b403_df)})"):
+            st.dataframe(b403_df, use_container_width=True)
+    b403_urls = []
+    for scan_type in ['js_discovered_endpoints', 'live_hosts', 'param_miner']:
+        df = project_manager.load_scan_results(scan_type, target_domain)
+        if isinstance(df, pd.DataFrame):
+            if 'endpoint' in df.columns:
+                b403_urls.extend(df['endpoint'].tolist())
+            elif 'URL' in df.columns:
+                b403_urls.extend(df['URL'].tolist())
+    b403_urls = project_manager.filter_targets_by_scope(
+        list(dict.fromkeys([u for u in b403_urls if is_valid_url(u)])))
+    st.caption(f"{len(b403_urls)} endpoint(s) queued.")
+    if st.button("🛡️ Run 403 Bypass", key="bypass403_run"):
+        if not b403_urls:
+            st.warning("No endpoints found. Run other scans first.")
+        else:
+            with st.spinner("Probing bypass techniques..."):
+                try:
+                    res = bypass403_engine.scan_sync(b403_urls)
+                    rows = []
+                    for r in res.get('results', []):
+                        for b in r.get('bypasses', []):
+                            rows.append({
+                                'URL': r.get('url', ''),
+                                'Baseline': r.get('baseline_status', ''),
+                                'Technique': b.get('technique', ''),
+                                'Status': b.get('status', ''),
+                                'Length': b.get('length', ''),
+                                'Bypass URL': b.get('url', ''),
+                            })
+                    new_b403_df = pd.DataFrame(rows)
+                    if not new_b403_df.empty:
+                        project_manager.save_scan_results('bypass403', target_domain, new_b403_df)
+                        st.success(f"Found {len(new_b403_df)} bypass technique(s) on "
+                                   f"{res.get('totals', {}).get('bypassed_urls', 0)} URL(s)!")
+                        st.dataframe(new_b403_df, use_container_width=True)
+                    else:
+                        st.info("No 403 bypasses found.")
+                except Exception as e:
+                    st.error(f"403 bypass scan failed: {e}")
+
+    # ---- GitHub Leak Search ----
+    st.markdown("---")
+    st.markdown("### 🐙 GitHub Leak Search")
+    st.caption("GitHub dorking for the apex: code/issues/commit search for secrets referencing the domain. "
+               "Rate-limit aware; can take ~1 min.")
+    gl_df = project_manager.load_scan_results('github_leaks', target_domain)
+    if isinstance(gl_df, pd.DataFrame) and not gl_df.empty:
+        with st.expander(f"Stored GitHub Leaks ({len(gl_df)})"):
+            st.dataframe(gl_df, use_container_width=True)
+    if st.button("🐙 Run GitHub Leak Search", key="github_leaks_run"):
+        with st.spinner("Dorking GitHub (can take ~1 min)..."):
+            try:
+                res = github_leak_scanner.scan_sync(target_domain)
+                new_gl_df = pd.DataFrame(res.get('findings', []))
+                if not new_gl_df.empty:
+                    project_manager.save_scan_results('github_leaks', target_domain, new_gl_df)
+                    st.success(f"Found {len(new_gl_df)} leak candidate(s) — "
+                               f"{res.get('totals', {}).get('secrets', 0)} secrets sniffed")
+                    st.dataframe(new_gl_df, use_container_width=True)
+                else:
+                    st.info("No GitHub leaks found.")
+                    if res.get('errors'):
+                        st.caption("⚠️ " + " | ".join(res['errors'][:5]))
+            except Exception as e:
+                st.error(f"GitHub leak search failed: {e}")
+
+    # ---- Endpoint Classifier ----
+    st.markdown("---")
+    st.markdown("### 🧮 Endpoint Classifier")
+    st.caption("Runs every discovered endpoint/param through the technique-library routing tables and ranks "
+               "the attack surface by likely vulnerability classes and priority.")
+    cls_df = project_manager.load_scan_results('classified_endpoints', target_domain)
+    if isinstance(cls_df, pd.DataFrame) and not cls_df.empty:
+        with st.expander(f"Stored Classified Endpoints ({len(cls_df)})"):
+            st.dataframe(cls_df, use_container_width=True)
+    cls_endpoints = []
+    for scan_type in ['js_discovered_endpoints', 'live_hosts', 'param_miner']:
+        df = project_manager.load_scan_results(scan_type, target_domain)
+        if isinstance(df, pd.DataFrame):
+            if 'endpoint' in df.columns:
+                cls_endpoints.extend(df['endpoint'].tolist())
+            elif 'URL' in df.columns:
+                cls_endpoints.extend(df['URL'].tolist())
+    cls_endpoints = list(dict.fromkeys([u for u in cls_endpoints if is_valid_url(u)]))
+    st.caption(f"{len(cls_endpoints)} endpoint(s) queued.")
+    if st.button("🧮 Run Classifier", key="classifier_run"):
+        if not cls_endpoints:
+            st.warning("No endpoints found. Run other scans first.")
+        else:
+            with st.spinner("Classifying and ranking endpoints..."):
+                try:
+                    ranked = classify_and_rank(cls_endpoints)
+                    new_cls_df = pd.DataFrame(ranked)
+                    if not new_cls_df.empty:
+                        project_manager.save_scan_results('classified_endpoints', target_domain, new_cls_df)
+                        st.success(f"Classified {len(new_cls_df)} endpoint(s).")
+                        st.dataframe(new_cls_df, use_container_width=True)
+                    else:
+                        st.info("Nothing to classify.")
+                except Exception as e:
+                    st.error(f"Endpoint classification failed: {e}")

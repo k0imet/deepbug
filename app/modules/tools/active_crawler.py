@@ -84,9 +84,8 @@ class ActiveCrawler:
         tfile = "/tmp/db_crawl_targets.txt"
         with open(tfile, "w") as fh:
             fh.write("\n".join(targets) + "\n")
-        cmd = (f"{binp} -list {tfile} -d {int(depth)} -f kf "
-               f"-c {int(threads)} -timeout {int(timeout)} -silent -nocrawl-config "
-               "--no-stdin-progress 2>/dev/null")
+        cmd = (f"{binp} -list {tfile} -d {int(depth)} -f url "
+               f"-c {int(threads)} -timeout {int(timeout)} -silent")
         code, out, err = _run_cmd(cmd, timeout=timeout * depth + 120)
         if code != 0 and not out.strip():
             logger.debug("katana exit=%s stderr=%s", code, err[:200])
@@ -104,7 +103,9 @@ class ActiveCrawler:
         if not os.path.exists(binp):
             return []
         cmd = f"{binp} --threads 8 --timeout {int(timeout)} {host} 2>/dev/null"
-        code, out, _err = _run_cmd(cmd, timeout=timeout + 30)
+        # gau queries public archive services and can hang for minutes on slow
+        # networks - cap it so a slow archive never stalls the whole crawl.
+        code, out, _err = _run_cmd(cmd, timeout=min(timeout + 30, 60))
         urls = [l.strip() for l in out.splitlines() if l.strip()]
         if scope_hosts:
             urls = [u for u in urls if self._in_scope(u, scope_hosts)]

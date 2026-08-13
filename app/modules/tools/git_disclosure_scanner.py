@@ -202,7 +202,7 @@ def _base_url(raw: str) -> str:
     p = urlparse(raw)
     if not p.hostname:
         return ''
-    return f'{p.scheme}://{p.hostname}'
+    return f'{p.scheme}://{p.netloc}'
 
 
 def _decompress_object(raw: bytes) -> bytes:

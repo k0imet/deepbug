@@ -168,6 +168,14 @@ def load_config() -> Dict:
             "max_context": 6000
         },
         "output_formats": {"default": "csv"},
+        "integrations": {
+            "burp": {"base_url": "http://127.0.0.1:1337", "api_key": "", "timeout": 30},
+            "caido": {"base_url": "http://127.0.0.1:8080", "pat": "", "timeout": 30}
+        },
+        "param_miner": {
+            "timeout": 240, "x8_concurrency": 15, "x8_processes": 4,
+            "arjun_threads": 10, "max_urls": 50, "osint": True
+        },
         "experimental": {
             "enable_async": False,
             "enable_ai": False,

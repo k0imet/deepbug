@@ -10,7 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from app.modules.utils import load_config
 from app.modules.project_manager import ProjectManager
+from app.modules.tools.evidence_hygiene import redact
 from app.utils.theme import inject_theme, app_header
+
+try:
+    from app.modules.integrations import evidence
+except ImportError:  # evidence module unavailable: attach-evidence degrades to a note
+    evidence = None
 
 CONFIG = load_config()
 
@@ -52,6 +58,47 @@ def get_report_sections():
     return sections
 
 
+def _evidence_html_section() -> str:
+    """HTML <h2>Evidence</h2> section from the evidence store (best effort, escaped)."""
+    section = ["<h2>Evidence</h2>"]
+    try:
+        entries = evidence.list_evidence(project_manager.get_current_project_path()) if evidence is not None else []
+    except Exception:
+        entries = []
+    if not entries:
+        section.append("<p>No evidence captured yet — run scans to collect evidence.</p>")
+        section.append("<br><hr><br>")
+        return "\n".join(section)
+    for entry in entries[:200]:
+        method = html.escape(str(entry.get("method") or ""))
+        url = html.escape(str(entry.get("url") or ""))
+        status = entry.get("status")
+        status_txt = html.escape(str(status) if status is not None else "—")
+        scan_type = html.escape(str(entry.get("scan_type") or ""))
+        summary = f"{method} {url} ({status_txt}) · {scan_type}"
+        lines = []
+        for header_name, label in (("request_headers", "REQUEST HEADERS"),
+                                   ("response_headers", "RESPONSE HEADERS")):
+            headers = entry.get(header_name) or {}
+            if headers:
+                lines.append(label)
+                for k, v in headers.items():
+                    lines.append(f"{k}: {v}")
+        if entry.get("request_body"):
+            lines.append("REQUEST BODY:")
+            lines.append(str(entry["request_body"]))
+        if entry.get("response_body_snippet"):
+            lines.append("RESPONSE BODY SNIPPET:")
+            lines.append(str(entry["response_body_snippet"]))
+        if entry.get("curl"):
+            lines.append("CURL:")
+            lines.append(str(entry["curl"]))
+        pre = "\n".join(lines) if lines else "(no request/response details captured)"
+        section.append(f"<details><summary>{summary}</summary><pre>{html.escape(pre)}</pre></details>")
+    section.append("<br><hr><br>")
+    return "\n".join(section)
+
+
 sections = get_report_sections()
 labels = [label for label, _ in sections]
 total_rows = sum(len(df) for _, df in sections)
@@ -71,6 +118,12 @@ else:
     report_title = st.text_input("Report Title", "Bug Bounty Reconnaissance Report")
     report_author = st.text_input("Report Author", "BugBountyBot User")
 
+    attach_evidence = st.checkbox(
+        "🧾 Attach evidence bundle (findings, curl commands, response snippets)",
+        value=True,
+        key="rep_evid",
+    )
+
     if st.button("Generate HTML Report"):
         if not selected_labels:
             st.warning("Please select at least one scan result to include in the report.")
@@ -88,6 +141,9 @@ else:
                     report_sections.append(f"<h2>{display_title}</h2>")
                     report_sections.append("<p>No data available for this section.</p>")
                     report_sections.append("<br><hr><br>")
+
+            if attach_evidence:
+                report_sections.append(_evidence_html_section())
 
             # Basic HTML Template using .format() as per your original structure
             html_template = """
@@ -189,3 +245,55 @@ else:
                 mime="text/html"
             )
             st.success("Report generated! Click the 'Download HTML Report' button above.")
+
+
+st.divider()
+
+st.subheader("🧹 Evidence Redaction")
+st.caption("Scrub credentials (tokens, passwords, cookies, URLs) from pasted evidence before dropping it into reports.")
+
+evid_input = st.text_area(
+    "Evidence text (paste request/response/notes)",
+    key="evid_input",
+    placeholder="GET /api/v1/users HTTP/1.1\nAuthorization: Bearer 12345abcde\nCookie: session=abcdef1234567890",
+)
+
+evid_tail = st.slider(
+    "Keep last N chars of each credential",
+    min_value=0,
+    max_value=12,
+    value=4,
+    key="evid_tail",
+)
+
+if st.button("🔎 Redact preview", key="evid_run"):
+    try:
+        evid_out = redact(evid_input, evid_tail)
+    except Exception as exc:
+        st.error(f"Redaction failed: {exc}")
+    else:
+        st.code(evid_out, language="text", height=200)
+        st.download_button(
+            "📥 Download redacted",
+            data=evid_out,
+            file_name="redacted_evidence.txt",
+            mime="text/plain",
+            key="evid_dl",
+        )
+
+evid_file = st.file_uploader("Or redact a text file", type=["txt"], key="evid_file")
+if evid_file is not None:
+    try:
+        evid_file_text = evid_file.getvalue().decode("utf-8", errors="replace")
+        evid_file_out = redact(evid_file_text, evid_tail)
+    except Exception as exc:
+        st.error(f"Redaction failed: {exc}")
+    else:
+        st.code(evid_file_out, language="text", height=200)
+        st.download_button(
+            "📥 Download redacted",
+            data=evid_file_out,
+            file_name=f"{evid_file.name}.redacted.txt",
+            mime="text/plain",
+            key="evid_filedl",
+        )

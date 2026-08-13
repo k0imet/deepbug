@@ -17,7 +17,7 @@ DeepBug is a self-hosted, browser-based platform that streamlines the whole bug 
 
 ---
 
-## 🧭 Workflow (6 pages)
+## 🧭 Workflow (7 pages)
 
 The app ships with a sidebar navigation in canonical workflow order:
 
@@ -35,6 +35,7 @@ The app ships with a sidebar navigation in canonical workflow order:
 4. **Dashboard** (`/dashboard`) — KPI metrics (subdomains, open ports, JS files, vulnerabilities, takeovers), charts, target overview, detailed expandable results, and recent activity (mtime-sorted), plus a refresh button.
 5. **Reporting** (`/reporting`) — pick saved scan sections, set a title/author, and generate an escaped, download-ready HTML report.
 6. **AI Assistant** (`/ai`) — chat with an OpenAI-compatible endpoint and analyze saved scan results.
+7. **Integrations** (`/integrations`) — connect **Burp Suite** (REST API: send live hosts to a scan, import findings and proxy history) and **Caido** (GraphQL: push endpoints into Replay, pull proxy history), plus export **evidence bundles** (HAR + JSONL) captured from findings. See `docs/INTEGRATIONS.md`.
 
 ---
 

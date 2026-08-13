@@ -67,7 +67,8 @@ class ParamMiner:
         pm_cfg = config.get('param_miner', {})
 
         self.timeout = int(pm_cfg.get('timeout', 240))
-        self.x8_concurrency = int(pm_cfg.get('x8_concurrency', 25))
+        self.x8_concurrency = int(pm_cfg.get('x8_concurrency', 15))
+        self.x8_processes = int(pm_cfg.get('x8_processes', 4))
         self.arjun_threads = int(pm_cfg.get('arjun_threads', 10))
         self.max_urls = int(pm_cfg.get('max_urls', 50))
         self.enable_osint = bool(pm_cfg.get('osint', True))
@@ -365,6 +366,15 @@ class ParamMiner:
                 if baseline:
                     self._x8_baselines[url] = baseline
 
+                # Keep a bounded tail of x8's own console output for the UI
+                # diagnostics ("did x8 actually run? what did it say?").
+                stdout_tail = (stdout or '').strip()[-400:]
+                if stdout_tail:
+                    self._x8_stdout = getattr(self, '_x8_stdout', {})
+                    if len(self._x8_stdout) > 40:
+                        self._x8_stdout.clear()
+                    self._x8_stdout[url] = stdout_tail
+
                 if not os.path.exists(out_file) or os.path.getsize(out_file) == 0:
                     if ret != 0:
                         self.last_errors.append(f"x8 failed on {url}: {stderr.strip()[:200]}")
@@ -384,6 +394,7 @@ class ParamMiner:
                             'reason': p.get('reason_kind', ''),
                             'diffs': p.get('diffs', ''),
                             'injection_place': entry.get('injection_place', 'Path'),
+                            'method': entry.get('method', 'GET'),
                             'tool': 'x8',
                             'source_url': entry.get('url', url),
                         })
@@ -398,6 +409,57 @@ class ParamMiner:
             finally:
                 if os.path.exists(out_file):
                     os.unlink(out_file)
+
+    # -----------------------------------------------------------------
+    # x8 self-test: prove the binary + flags + output parse all work.
+    # Returns raw diagnostics the UI can render verbatim.
+    # -----------------------------------------------------------------
+    def x8_self_test(self, url: str) -> Dict:
+        if not self.has_x8:
+            return {'ok': False, 'error': 'x8 binary not found (tools.paths.x8 / PATH)'}
+        out_file = tempfile.NamedTemporaryFile(suffix='.json', delete=False).name
+        try:
+            cmd = [
+                str(self.x8_path),
+                '-u', url,
+                '-w', str(self.wordlist_path),
+                '-X', 'GET',
+                '-c', '5',
+                '--timeout', '10',
+                '--mimic-browser',
+                '--disable-progress-bar',
+                '--disable-colors',
+                '-v', '0',
+                '-o', out_file,
+                '-O', 'json',
+            ]
+            import asyncio as _ai
+            stdout, stderr, ret = _ai.run(run_command_async(cmd, timeout=120))
+            parsed = []
+            if os.path.exists(out_file) and os.path.getsize(out_file) > 0:
+                try:
+                    with open(out_file, 'r') as f:
+                        data = json.load(f)
+                    parsed = [
+                        {'url': e.get('url', url),
+                         'found_params': [p.get('name') for p in e.get('found_params', []) if p.get('name')]}
+                        for e in data if isinstance(e, dict)
+                    ]
+                except json.JSONDecodeError as e:
+                    parsed = [{'error': f'JSON parse failed: {e}'}]
+            return {
+                'ok': ret == 0,
+                'url': url,
+                'exit_code': ret,
+                'stdout': (stdout or '').strip()[-1500:],
+                'stderr': (stderr or '').strip()[-800:],
+                'json_output': parsed,
+            }
+        except Exception as e:
+            return {'ok': False, 'url': url, 'error': f'{type(e).__name__}: {e}'}
+        finally:
+            if os.path.exists(out_file):
+                os.unlink(out_file)
 
     # =================================================================
     # Active Fuzzing: Arjun (fallback)
@@ -618,7 +680,7 @@ class ParamMiner:
         logger.info(f"ParamMiner: engine={engine}, {len(urls)} URLs, wordlist={len(master_wordlist)}")
 
         # 3. Active fuzzing with real per-URL progress
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(self.x8_processes)
         results: Dict[str, List[Dict]] = {}
         done_count = 0
         total = len(urls)

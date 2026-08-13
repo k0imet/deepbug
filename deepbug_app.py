@@ -56,7 +56,7 @@ theme_toggle()
 
 # --------------------------------------------------------------
 # 5. Navigation – canonical workflow order:
-#    Projects → Reconnaissance → Vulnerability Scanner → Dashboard → Reporting → AI Assistant
+#    Projects → Reconnaissance → Vulnerability Scanner → Dashboard → Reporting → AI Assistant → Integrations
 # --------------------------------------------------------------
 PAGES_DIR = PROJECT_ROOT / 'app' / 'pages'
 
@@ -67,6 +67,7 @@ nav = st.navigation([
     st.Page(str(PAGES_DIR / '3_Dashboard.py'), title='Dashboard', icon='📊', url_path='dashboard'),
     st.Page(str(PAGES_DIR / '4_Reporting.py'), title='Reporting', icon='📄', url_path='reporting'),
     st.Page(str(PAGES_DIR / '5_AI.py'), title='AI Assistant', icon='🤖', url_path='ai'),
+    st.Page(str(PAGES_DIR / '6_Integrations.py'), title='Integrations', icon='🔌', url_path='integrations'),
 ], position='sidebar')
 
 nav.run()

@@ -15,6 +15,18 @@ from app.modules.project_manager import ProjectManager
 from app.modules.scanner import VulnerabilityScanner
 from app.utils.theme import inject_theme, app_header
 
+try:
+    from app.modules.integrations import evidence
+except ImportError:  # evidence module unavailable: skip evidence capture gracefully
+    evidence = None
+
+try:
+    from app.utils.logger import get_logger as _get_logger
+    _scan_logger = _get_logger()
+except Exception:
+    import logging
+    _scan_logger = logging.getLogger("deepbug.scanner")
+
 CONFIG = load_config()
 
 inject_theme()
@@ -171,6 +183,18 @@ elif st.session_state.scan_status == 'completed':
         save_target = selected_target or 'manual_scan'
         project_manager.save_scan_results('vulnerabilities', save_target, result_df)
         st.success(f"Scan finished: {len(result_df)} vulnerabilities saved to disk.")
+        try:
+            if evidence is not None and project_manager.get_current_project_path() is not None:
+                project_path = project_manager.get_current_project_path()
+                for _, row in result_df.head(min(25, len(result_df))).iterrows():
+                    try:
+                        evidence.capture_finding(project_path, save_target, 'vulnerabilities', row.to_dict())
+                    except Exception as _evid_err:
+                        _scan_logger.error("Evidence capture failed: %s", _evid_err)
+        except Exception as _evid_err:
+            _scan_logger.error("Evidence capture failed: %s", _evid_err)
+        if evidence is not None:
+            st.caption("📥 Evidence captured for up to 25 findings (see Integrations → Evidence capture to export).")
         if save_target == 'manual_scan':
             st.caption("Saved under target `manual_scan` because no project target was selected.")
         st.dataframe(result_df, width='stretch')

@@ -74,12 +74,14 @@ class PortScanner:
                 progress_callback(0, f"Error: {tool_name} encountered an unexpected error.")
             raise RuntimeError(f"An unexpected error occurred while running {tool_name}: {e}")
 
-    def run_port_scan(self, target: str, tool: str = "nmap", progress_callback: Optional[Callable[[float, str], None]] = None) -> pd.DataFrame:
+    def run_port_scan(self, target: str, tool: str = "nmap", port_range: Optional[str] = None,
+                      progress_callback: Optional[Callable[[float, str], None]] = None) -> pd.DataFrame:
         """
         Performs port scanning on the target using Nmap, Masscan, or Naabu.
         Args:
             target (str): The target IP or domain.
             tool (str): 'nmap', 'masscan', or 'naabu'.
+            port_range (Optional[str]): e.g. '80,443' or '1-1024'. None / '-p-' = all ports.
             progress_callback (Optional[Callable]): Callback for UI progress updates.
         Returns:
             pd.DataFrame: DataFrame of open ports.
@@ -90,10 +92,16 @@ class PortScanner:
             if not self.nmap_path.is_file():
                 logger.error(f"Nmap executable not found at {self.nmap_path}. Cannot perform Nmap scan.")
                 raise FileNotFoundError(f"Nmap executable not found at {self.nmap_path}")
-            
-            # -p- for all 65535 ports, -Pn to skip host discovery (useful for targets that block ping),
-            # -sV for service/version detection, -oG for greppable output.
-            cmd = f"{self.nmap_path} -p- -sV -T4 --open {target} -oG -"
+
+            pr = (port_range or '').strip()
+            if not pr or pr == '-p-':
+                ports_arg = '-p-'
+            else:
+                ports_arg = f'-p {pr}'
+            # -p- for all ports (or the requested range), -Pn to skip host discovery
+            # (useful for targets that block ping), -sV for service/version detection,
+            # -oG for greppable output.
+            cmd = f"{self.nmap_path} {ports_arg} -sV -T4 --open {target} -oG -"
             output = self._run_command(cmd, 'Nmap', timeout=900, progress_callback=progress_callback) # Nmap can be slow
             return self._parse_nmap_greppable_output(output, target)
 
@@ -102,8 +110,10 @@ class PortScanner:
                 logger.error(f"Masscan executable not found at {self.masscan_path}. Cannot perform Masscan scan.")
                 raise FileNotFoundError(f"Masscan executable not found at {self.masscan_path}")
             
+            pr = (port_range or '').strip()
+            ports_arg = f'-p{pr}' if pr and pr != '-p-' else '-p0-65535'
             # --rate 1000 for 1000 packets/sec (adjust as needed), -p 0-65535 for all ports
-            cmd = f"{self.masscan_path} {target} -p0-65535 --rate {self.config['tools']['rate_limits'].get('masscan', 1000)} --wait 0"
+            cmd = f"{self.masscan_path} {target} {ports_arg} --rate {self.config['tools']['rate_limits'].get('masscan', 1000)} --wait 0"
             output = self._run_command(cmd, 'Masscan', timeout=300, progress_callback=progress_callback)
             return self._parse_masscan_output(output, target)
 
