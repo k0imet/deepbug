@@ -10,7 +10,7 @@ DeepBug is a self-hosted, browser-based platform that streamlines the whole bug 
 
 * **📂 Projects** — Create, load, or delete projects. Every scan result is saved per project, per target, straight to disk.
 * **🔍 Reconnaissance** — 8 tabs of discovery: subdomain enumeration & takeover checks, port scanning, deep JavaScript analysis, vulnerability detection, cloud & infra probing, parameter mining, security headers, and advanced scans. Powered by **69 tool modules** in `app/modules/tools`.
-* **🛡️ Vulnerability Scanner** — Nuclei-based scanning of your live hosts with a live progress UI, results saved to disk and reloadable later.
+* **🛡️ Vulnerability Scanner** — Nuclei-based scanning with a live progress UI, results saved to disk and reloadable later. Targets pull from **every tool in the pipeline** (live hosts, JS endpoints, param-mined URLs, collected URLs, Caido/Burp history, GF candidates) with veteran controls: tags, severity filter, rate/concurrency, workflows, and a per-project custom template library (`custom_templates/`).
 * **📊 Dashboard** — KPIs, charts, target overview, detailed results, and recent activity across the active project.
 * **📄 Reporting** — One-click HTML report generation from all saved scan sections, with a download button.
 * **🤖 AI Assistant** — Bring your own AI: chat with pinned context and get summaries, triage, prioritization, and next-step suggestions for saved results — with a built-in heuristic fallback when no API key is configured.
@@ -31,7 +31,7 @@ The app ships with a sidebar navigation in canonical workflow order:
    * 🔑 **Parameter Mining** — param mining and historical URL hunting.
    * 🛡️ **Security Headers** — header hardening checks.
    * 🧬 **Advanced Scans** — GraphQL, IDOR, race conditions, smuggling, JWT, and more.
-3. **Vulnerability Scanner** (`/scanner`) — pick targets from `live_hosts` (or paste URLs manually), run Nuclei in a background thread with a queue-driven progress bar, and save findings to disk as `vulnerabilities`.
+3. **Vulnerability Scanner** (`/scanner`) — merge URL sources from the whole pipeline (live hosts, JS endpoints, param-mined URLs, collected URLs, Caido/Burp history, GF candidates) or paste URLs manually; run Nuclei in a background thread with queue-driven progress, tags/severity/rate/concurrency controls, custom + project templates, and save findings to disk as `vulnerabilities`.
 4. **Dashboard** (`/dashboard`) — KPI metrics (subdomains, open ports, JS files, vulnerabilities, takeovers), charts, target overview, detailed expandable results, and recent activity (mtime-sorted), plus a refresh button.
 5. **Reporting** (`/reporting`) — pick saved scan sections, set a title/author, and generate an escaped, download-ready HTML report.
 6. **AI Assistant** (`/ai`) — chat with an OpenAI-compatible endpoint and analyze saved scan results.

@@ -50,14 +50,15 @@ if 'scan_status' not in st.session_state:
     })
 
 
-def run_nuclei_task(targets, template, queue):
+def run_nuclei_task(targets, template, queue, options=None):
     """Background task to avoid blocking the Main Thread."""
     try:
         def progress_callback(p, msg):
             queue.put(('progress', p, msg))
 
         df = st.session_state.scanner_tool.run_nuclei_scan(
-            targets, template_path=template, progress_callback=progress_callback
+            targets, template_path=template, progress_callback=progress_callback,
+            options=options
         )
         queue.put(('result', df))
     except Exception as e:
@@ -92,6 +93,49 @@ if not current_project:
     st.stop()
 
 all_targets = list(project_manager.get_all_targets_for_current_project().keys())
+
+# --- URL source aggregation: pull from every tool in the pipeline ---
+def _source_urls(scan_type, url_cols, target):
+    """Load URLs for one source type, tolerating any column naming."""
+    urls = []
+    frame = project_manager.load_scan_results(scan_type, target)
+    if isinstance(frame, pd.DataFrame) and not frame.empty:
+        for col in url_cols:
+            if col in frame.columns:
+                urls.extend(frame[col].dropna().astype(str).tolist())
+                break
+    # Nested js_analysis dict fallback
+    if scan_type == 'js_discovered_endpoints' and isinstance(frame, dict):
+        for sub in ('js_discovered_endpoints', 'js_priority_endpoints'):
+            sub_df = frame.get(sub)
+            if isinstance(sub_df, pd.DataFrame) and not sub_df.empty:
+                for col in url_cols:
+                    if col in sub_df.columns:
+                        urls.extend(sub_df[col].dropna().astype(str).tolist())
+                        break
+    return [u for u in urls if is_valid_url(u)]
+
+
+def _load_gf_urls(target):
+    """Collect URLs from every saved gf_*_candidates frame (Vulnerability Detection output)."""
+    urls = []
+    project_path = project_manager.get_current_project_path()
+    if project_path and target:
+        target_dir = project_path / target.replace('.', '_').replace('/', '_')
+        if target_dir.is_dir():
+            for f in sorted(target_dir.glob('gf_*_results.json')):
+                try:
+                    df = pd.read_json(f)
+                    for col in ('URL', 'url'):
+                        if col in df.columns:
+                            urls.extend(df[col].dropna().astype(str).tolist())
+                            break
+                except Exception:
+                    continue
+    return [u for u in urls if is_valid_url(u)]
+
+
+st.subheader("🎯 Targets")
 selected_target = st.selectbox("Select target:", [''] + all_targets, key="scanner_selected_target")
 
 # --- Previously saved results (persisted on disk) ---
@@ -110,37 +154,126 @@ if selected_target:
         st.markdown(f"**{len(saved)}** saved findings for `{selected_target}`{mtime_note}.")
         st.dataframe(saved, width='stretch')
 
-# --- Targeting & Config ---
+sources = {
+    'live_hosts': ('🌐 Live hosts', ['URL']),
+    'js_discovered_endpoints': ('📜 JS endpoints', ['endpoint', 'URL']),
+    'param_miner': ('🔑 Param-mined URLs', ['URL', 'url']),
+    'param_miner_historical': ('🕰️ Historical param URLs', ['URL', 'url']),
+    'collected_urls': ('🗃️ Collected URLs', ['URL', 'url']),
+    'caido_history': ('🕸️ Caido history', ['url', 'URL']),
+    'burp_history': ('🔗 Burp history', ['url', 'URL']),
+}
+source_counts = {}
+if selected_target:
+    for key, (label, cols) in sources.items():
+        source_counts[key] = len(_source_urls(key, cols, selected_target))
+    source_counts['gf_candidates'] = len(_load_gf_urls(selected_target))
+else:
+    for key in sources:
+        source_counts[key] = 0
+    source_counts['gf_candidates'] = 0
+
 col1, col2 = st.columns(2)
 with col1:
-    selected_urls = []
-    if selected_target:
-        live = project_manager.load_scan_results('live_hosts', selected_target)
-        if isinstance(live, pd.DataFrame) and 'URL' in live.columns and not live.empty:
-            url_options = live['URL'].dropna().astype(str).tolist()
-            selected_urls = st.multiselect("Select URLs to scan:", url_options, default=url_options, key="scanner_urls")
+    st.markdown("**Scan sources** (merged + deduped):")
+    enabled = {}
+    for key, (label, _) in sources.items():
+        enabled[key] = st.checkbox(f"{label} ({source_counts[key]})", value=bool(source_counts[key]),
+                                   key=f"scn_src_{key}",
+                                   disabled=(source_counts[key] == 0))
+    enabled['gf_candidates'] = st.checkbox(f"🎯 GF candidates ({source_counts['gf_candidates']})",
+                                           value=bool(source_counts['gf_candidates']),
+                                           key="scn_src_gf",
+                                           disabled=(source_counts['gf_candidates'] == 0))
 
 with col2:
     manual_urls = st.text_area("Or enter URLs manually (one per line):", key="scanner_manual_urls")
-    custom_path = st.text_input("Custom template path:", key="scanner_template_path")
-    start_scan = st.button("Start Scan", disabled=(st.session_state.scan_status == 'running'))
+    st.markdown("**Nuclei options**")
+    custom_path = st.text_input("Template path (file/dir, comma-separated ok, empty = default templates):",
+                                key="scanner_template_path",
+                                help="Absolute path or relative to the configured nuclei templates dir. "
+                                     "Leave empty to use the configured templates directory.")
+    t1, t2 = st.columns(2)
+    with t1:
+        scan_tags = st.text_input("Tags (-tags)", key="scn_tags", placeholder="cve,oast,exposure")
+    with t2:
+        scan_severity = st.multiselect("Severity (-severity)", ["info", "low", "medium", "high", "critical"],
+                                       key="scn_severity", default=None)
+    t3, t4, t5 = st.columns(3)
+    with t3:
+        scan_rate = st.number_input("Rate (req/s)", 1, 2000, 150, key="scn_rate")
+    with t4:
+        scan_conc = st.number_input("Concurrency (-c)", 1, 500, 25, key="scn_conc")
+    with t5:
+        scan_workflow = st.checkbox("Workflow (-w)", key="scn_wf",
+                                    help="Treat the template path as a nuclei workflow file.")
 
-scan_targets = list(selected_urls)
+# Project-level custom templates (persisted in the project dir, reusable)
+project_templates = {}
+project_path = project_manager.get_current_project_path()
+if project_path:
+    tpl_dir = project_path / 'custom_templates'
+    if tpl_dir.is_dir():
+        project_templates = {f.name: f for f in sorted(tpl_dir.glob('*.yaml'))}
+    with st.expander("🗂️ Project templates (custom_templates/)"):
+        if project_templates:
+            chosen = st.selectbox("Use a project template:", [''] + list(project_templates.keys()),
+                                  key="scn_proj_tpl")
+            if chosen:
+                custom_path = str(project_templates[chosen])
+                st.caption(f"Using project template: `{chosen}`")
+        else:
+            st.caption("No templates yet — upload .yaml files to store them per project.")
+        up = st.file_uploader("Upload custom template(s)", type=["yaml", "yml"], accept_multiple_files=True,
+                              key="scn_tpl_upload")
+        if up:
+            tpl_dir.mkdir(exist_ok=True)
+            for f in up:
+                (tpl_dir / f.name).write_bytes(f.getbuffer())
+            st.success(f"Saved {len(up)} template(s) to `{tpl_dir}` — they appear above next run.")
+            st.rerun()
+
+scan_targets = []
+if selected_target:
+    for key, (label, _) in sources.items():
+        if enabled.get(key):
+            scan_targets.extend(_source_urls(key, sources[key][1], selected_target))
+    if enabled.get('gf_candidates'):
+        scan_targets.extend(_load_gf_urls(selected_target))
 for line in (manual_urls or '').splitlines():
     url = is_valid_url(line.strip())
-    if url and url not in scan_targets:
+    if url:
         scan_targets.append(url)
+scan_targets = list(dict.fromkeys(scan_targets))
+
+source_total = sum(source_counts.values())
+st.caption(f"🎯 **{len(scan_targets)} unique URLs** ready to scan (from {source_total} collected across "
+           f"{len([k for k, v in enabled.items() if v])} source(s)).")
+if scan_targets:
+    with st.expander(f"Preview ({min(50, len(scan_targets))} of {len(scan_targets)}):"):
+        st.dataframe(pd.DataFrame({'URL': scan_targets[:50]}), width='stretch')
+
+scan_options = {
+    'tags': scan_tags.strip() if scan_tags.strip() else None,
+    'severity': scan_severity or None,
+    'rate': int(scan_rate),
+    'concurrency': int(scan_conc),
+}
+start_scan = st.button("🚀 Start Scan", type="primary", disabled=(st.session_state.scan_status == 'running'))
 
 if start_scan:
     if not scan_targets:
-        st.error("No scan targets. Select URLs from the project target or enter some manually.")
+        st.error("No scan targets. Enable a source with URLs, or enter URLs manually.")
     elif st.session_state.scan_status == 'running':
         st.info("A scan is already running.")
     else:
         st.session_state.scan_status = 'running'
         st.session_state.scan_progress = 0.0
         st.session_state.scan_message = 'Starting scan...'
-        threading.Thread(target=run_nuclei_task, args=(scan_targets, custom_path, st.session_state.scan_queue), daemon=True).start()
+        threading.Thread(target=run_nuclei_task,
+                         args=(scan_targets, custom_path, st.session_state.scan_queue),
+                         kwargs={'options': scan_options},
+                         daemon=True).start()
         st.rerun()
 
 # --- Queue Processor ---

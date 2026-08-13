@@ -348,12 +348,23 @@ with tab1:
                     st.caption("⚠️ dnsx unavailable/failed - probing all subdomains (slower).")
 
                 progress_bar.progress(0.80, f"Probing HTTP/S on {len(probe_targets)} resolved hosts...")
-                _probe = getattr(subdomain_scanner, '_run_httpx_with_ports', None)
+                _probe = getattr(subdomain_scanner, 'probe_live_hosts_chunked', None)
                 if _probe:
-                    http_results = _probe(probe_targets, extra_ports)
+                    # Chunked probing: httpx runs on manageable batches and the
+                    # results are merged - avoids httpx blowing up on thousands
+                    # of subdomains at once.
+                    http_results = _probe(
+                        probe_targets, extra_ports=None,
+                        chunk_size=150, concurrency=25, rate_limit=150,
+                        progress_callback=lambda p, m: progress_bar.progress(0.80 + p * 0.19, text=m))
                 else:
-                    st.caption("⚠️ Loaded SubdomainScanner lacks `_run_httpx_with_ports` — using default ports. Restart Streamlit / update subdomain_scanner.py.")
-                    http_results = subdomain_scanner._run_httpx(probe_targets)
+                    _probe_legacy = getattr(subdomain_scanner, '_run_httpx_with_ports', None)
+                    if _probe_legacy:
+                        http_results = _probe_legacy(probe_targets, extra_ports=None)
+                    else:
+                        st.caption("⚠️ Loaded SubdomainScanner is stale — using default ports. Restart Streamlit / update subdomain_scanner.py.")
+                        http_results = subdomain_scanner._run_httpx(probe_targets)
+                progress_bar.progress(0.995, "Finalizing live hosts...")
                 if http_results:
                     df = pd.DataFrame(http_results)
                     project_manager.save_scan_results('live_hosts', target_domain, df)

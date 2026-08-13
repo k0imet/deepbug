@@ -550,6 +550,110 @@ class SubdomainScanner:
             if temp_file and Path(temp_file).exists():
                 Path(temp_file).unlink()
 
+    def _httpx_cmd(self, temp_input: str, temp_output: str, port_list: List[str],
+                   threads: int = 100, rate: int = 500) -> List[str]:
+        """Build the httpx command line (shared by single-run and chunked probing)."""
+        cmd = [
+            str(self.httpx_path), '-l', temp_input, '-json', '-o', temp_output,
+            '-silent', '-follow-redirects', '-title', '-tech-detect',
+            '-status-code', '-content-length', '-web-server',
+            '-header', 'User-Agent: Mozilla/5.0 (compatible; SecurityProbe/1.0) -BugBounty-bitoasis ',
+            '-t', str(threads),
+            '-timeout', '8',
+            '-rl', str(rate),
+            '-ports', ','.join(port_list),
+        ]
+        return cmd
+
+    @staticmethod
+    def _parse_httpx_output(output_file: str) -> List[Dict[str, Any]]:
+        """Parse httpx JSONL output into result dicts (deduped by URL)."""
+        results = []
+        seen = set()
+        try:
+            with open(output_file, 'r') as f:
+                for line in f:
+                    try:
+                        data = json.loads(line)
+                        url = data.get('url', '')
+                        if not url or url in seen:
+                            continue
+                        seen.add(url)
+                        results.append({
+                            'URL': url,
+                            'Input': data.get('input', ''),
+                            'StatusCode': data.get('status-code', ''),
+                            'Title': data.get('title', ''),
+                            'WebServer': data.get('webserver', ''),
+                            'ContentLength': data.get('content-length', ''),
+                            'Technologies': ', '.join(data.get('tech', []))
+                        })
+                    except Exception as e:
+                        logger.warning(f"Error parsing httpx output: {e}")
+        except OSError as e:
+            logger.warning(f"Could not read httpx output {output_file}: {e}")
+        return results
+
+    def probe_live_hosts_chunked(self, subdomains: List[str],
+                                 extra_ports: Optional[List[str]] = None,
+                                 chunk_size: int = 150, concurrency: int = 25,
+                                 rate_limit: int = 150,
+                                 progress_callback: Optional[Callable[[float, str], None]] = None) -> List[Dict[str, Any]]:
+        """
+        Probe many subdomains without crashing httpx: split the input into
+        manageable chunks, run httpx per chunk with modest threads/rate, then
+        merge + dedupe the results. Returns the combined live-host list.
+
+        This replaces the single giant httpx invocation which can blow up on
+        large subdomain sets (thousands of hosts, -t 100, -rl 500).
+        """
+        if not self.httpx_path.is_file() or not subdomains:
+            return []
+
+        default_ports = ['443', '80']
+        if extra_ports:
+            port_list = list(dict.fromkeys(default_ports + extra_ports))
+        else:
+            port_list = default_ports
+
+        hosts = list(dict.fromkeys(h for h in subdomains if h))
+        chunks = [hosts[i:i + chunk_size] for i in range(0, len(hosts), chunk_size)]
+        logger.info(f"probe_live_hosts_chunked: {len(hosts)} hosts in {len(chunks)} chunks "
+                    f"(chunk={chunk_size}, threads={concurrency}, rate={rate_limit})")
+
+        all_results = []
+        seen = set()
+        for idx, chunk in enumerate(chunks):
+            if progress_callback:
+                progress_callback(idx / max(len(chunks), 1),
+                                  f"Probing hosts {idx * chunk_size + 1}-{idx * chunk_size + len(chunk)} "
+                                  f"of {len(hosts)} (chunk {idx + 1}/{len(chunks)})...")
+            temp_input = temp_output = None
+            try:
+                with tempfile.NamedTemporaryFile(mode='w+', delete=False) as f_in:
+                    temp_input = f_in.name
+                    f_in.write('\n'.join(chunk) + '\n')
+                with tempfile.NamedTemporaryFile(mode='w+', delete=False) as f_out:
+                    temp_output = f_out.name
+                cmd = self._httpx_cmd(temp_input, temp_output, port_list,
+                                      threads=concurrency, rate=rate_limit)
+                self._run_command(cmd, 'Httpx', timeout=300)
+                for row in self._parse_httpx_output(temp_output):
+                    if row['URL'] not in seen:
+                        seen.add(row['URL'])
+                        all_results.append(row)
+            except Exception as e:
+                logger.warning(f"httpx chunk {idx + 1} failed: {e}")
+            finally:
+                for f in [temp_input, temp_output]:
+                    if f and Path(f).exists():
+                        Path(f).unlink()
+
+        if progress_callback:
+            progress_callback(1.0, f"Probing done: {len(all_results)} live hosts from {len(hosts)} inputs.")
+        logger.info(f"probe_live_hosts_chunked: {len(all_results)} live hosts")
+        return all_results
+
     def _run_httpx(self, subdomains: List[str], progress_callback: Optional[Callable[[float, str], None]] = None) -> List[Dict[str, Any]]:
         if not self.httpx_path.is_file() or not subdomains:
             return []
@@ -571,23 +675,7 @@ class SubdomainScanner:
             ]
             self._run_command(cmd, 'Httpx', timeout=600,
                               progress_callback=lambda p, s: progress_callback(0.7 + p * 0.3, s) if progress_callback else None)
-            results = []
-            with open(temp_output, 'r') as f:
-                for line in f:
-                    try:
-                        data = json.loads(line)
-                        results.append({
-                            'URL': data.get('url', ''),
-                            'Input': data.get('input', ''),
-                            'StatusCode': data.get('status-code', ''),
-                            'Title': data.get('title', ''),
-                            'WebServer': data.get('webserver', ''),
-                            'ContentLength': data.get('content-length', ''),
-                            'Technologies': ', '.join(data.get('tech', []))
-                        })
-                    except Exception as e:
-                        logger.warning(f"Error parsing httpx output: {e}")
-            return results
+            return self._parse_httpx_output(temp_output)
         finally:
             for f in [temp_input, temp_output]:
                 if f and Path(f).exists():
@@ -609,7 +697,7 @@ class SubdomainScanner:
         # default list is [80, 443] which probes EVERY host on BOTH ports (one
         # 80 + one 443 row per host), duplicating live results ~2x. By forcing
         # the flag we probe each host exactly once per requested port.
-        default_ports = ['443', '80']
+        default_ports = ['443']
         if extra_ports:
             port_list = list(dict.fromkeys(default_ports + extra_ports))  # dedupe, keep order
         else:
@@ -640,22 +728,7 @@ class SubdomainScanner:
             self._run_command(cmd, 'Httpx', timeout=600,
                               progress_callback=lambda p, s: progress_callback(0.7 + p * 0.3, s) if progress_callback else None)
 
-            results = []
-            with open(temp_output, 'r') as f:
-                for line in f:
-                    try:
-                        data = json.loads(line)
-                        results.append({
-                            'URL': data.get('url', ''),
-                            'Input': data.get('input', ''),
-                            'StatusCode': data.get('status-code', ''),
-                            'Title': data.get('title', ''),
-                            'WebServer': data.get('webserver', ''),
-                            'ContentLength': data.get('content-length', ''),
-                            'Technologies': ', '.join(data.get('tech', []))
-                        })
-                    except Exception as e:
-                        logger.warning(f"Error parsing httpx output: {e}")
+            results = self._parse_httpx_output(temp_output)
             return results
         finally:
             for f in [temp_input, temp_output]:

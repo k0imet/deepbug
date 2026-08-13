@@ -119,7 +119,8 @@ class VulnerabilityScanner:
         targets: List[str],
         template_path: str = "",
         is_workflow: bool = False,
-        progress_callback: Optional[Callable[[float, str], None]] = None
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        options: Optional[Dict[str, Any]] = None
     ) -> pd.DataFrame:
         if not targets:
             logger.warning("No targets provided")
@@ -147,16 +148,20 @@ class VulnerabilityScanner:
 
         # Build command
         command = [str(self.nuclei_path), '-jsonl', '-silent']
+        opts = options or {}
         if template_path:
-            if not self.validate_template_path(template_path, is_workflow):
-                error_msg = f"Invalid {'workflow' if is_workflow else 'template'} path: {template_path}"
-                logger.error(error_msg)
-                if progress_callback:
-                    progress_callback(1.0, error_msg)
-                return pd.DataFrame()
+            # Support comma-separated template/workflow paths (file, dir, or
+            # a path relative to the configured templates dir).
             flag = '-w' if is_workflow else '-t'
-            full_path = template_path if Path(template_path).is_absolute() else str(self.nuclei_templates_path / template_path)
-            command.extend([flag, full_path])
+            for tpath in [p.strip() for p in template_path.split(',') if p.strip()]:
+                if not self.validate_template_path(tpath, is_workflow):
+                    error_msg = f"Invalid {'workflow' if is_workflow else 'template'} path: {tpath}"
+                    logger.error(error_msg)
+                    if progress_callback:
+                        progress_callback(1.0, error_msg)
+                    return pd.DataFrame()
+                full_path = tpath if Path(tpath).is_absolute() else str(self.nuclei_templates_path / tpath)
+                command.extend([flag, full_path])
         elif self.nuclei_templates_path.is_dir():
             # No explicit template: use the configured templates dir when present.
             command.extend(['-t', str(self.nuclei_templates_path)])
@@ -166,6 +171,28 @@ class VulnerabilityScanner:
                 f"Nuclei templates dir not found at '{self.nuclei_templates_path}' - "
                 "running nuclei without an explicit template directory."
             )
+
+        # Optional scan tuning (veteran controls: tags, severity, rate, concurrency)
+        tags = opts.get('tags')
+        if tags:
+            command.extend(['-tags', str(tags)])
+        severity = opts.get('severity')
+        if severity:
+            if isinstance(severity, (list, tuple)):
+                severity = ','.join(str(s) for s in severity)
+            command.extend(['-severity', str(severity)])
+        rate = opts.get('rate')
+        if rate:
+            command.extend(['-rl', str(int(rate))])
+        concurrency = opts.get('concurrency')
+        if concurrency:
+            command.extend(['-c', str(int(concurrency))])
+        timeout = opts.get('timeout')
+        if timeout:
+            command.extend(['-timeout', str(int(timeout))])
+        extra_args = opts.get('extra_args')
+        if extra_args:
+            command.extend(str(a) for a in extra_args)
 
         # Add targets
         temp_target_file = None
