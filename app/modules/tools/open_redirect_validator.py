@@ -31,7 +31,7 @@ from app.utils.logger import get_logger
 
 logger = get_logger()
 
-_REDIRECT_PARAMS = [
+_REDIRECT_PARAMS = ['g', 'r', 'l', 'to', 'link2', 'target_url', 'redirect_url', 'redirect_uri',
     'url', 'redirect', 'next', 'return', 'return_url', 'return_to', 'dest',
     'destination', 'goto', 'target', 'rurl', 'qurl', 'link', 'out', 'view',
     'dir', 'continue', 'callback', 'redir', 'redirect_url', 'image_url',
@@ -58,6 +58,9 @@ class OpenRedirectValidator:
                 logger.debug(f"OpenRedirectValidator: browser backend unavailable: {e}")
         self.last_errors: List[str] = []
         self.value = f"dbx{random.randint(100000, 999999)}"
+        self.oob_uuid = str(cfg.get('oob_uuid', '') or '').strip()
+        self.oob_poll_wait = float(cfg.get('oob_poll_wait', 6))
+        self.oob_base = f"https://webhook.site/{self.oob_uuid}" if self.oob_uuid else ""
 
     @staticmethod
     def _canary_host(value: str) -> str:
@@ -72,7 +75,13 @@ class OpenRedirectValidator:
         parsed = urllib.parse.urlparse(url)
         pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
         out: List[str] = []
-        targets = [f"https://{canary}/", f"//{canary}/", f"https://{canary}"]
+        if self.oob_base:
+            # OOB mode: the redirect must land on a host we can observe
+            targets = [f"{self.oob_base}?v={self.value}",
+                       f"//webhook.site/{self.oob_uuid}?v={self.value}",
+                       self.oob_base]
+        else:
+            targets = [f"https://{canary}/", f"//{canary}/", f"https://{canary}"]
         for k, _ in pairs:
             key = k.lower()
             if key not in _REDIRECT_PARAMS:
@@ -126,7 +135,14 @@ class OpenRedirectValidator:
                 loc = (resp.headers.get('Location') or '').strip()
                 status = resp.status
                 if loc:
-                    hit = self._judge(status, loc, url, canary, 'http-location')
+                    if self.oob_base and self.value in loc and 'webhook.site' in loc:
+                        # OOB mode: redirect leaves to webhook.site carrying our
+                        # canary -> offsite by construction
+                        hit = {'Result': 'CONFIRMED', 'Class': 'redirect-offsite',
+                               'Sink': f'{status} -> {loc[:120]}', 'Method': 'http-location'}
+                    else:
+                        match_key = self.value if self.oob_base else canary
+                        hit = self._judge(status, loc, url, match_key, 'http-location')
                     if hit:
                         hit['URL'] = url
                         return hit
@@ -149,6 +165,25 @@ class OpenRedirectValidator:
             return None
         return None
 
+    async def _poll_oob(self, session: aiohttp.ClientSession) -> List[str]:
+        """Poll webhook.site for callbacks carrying our canary value."""
+        if not self.oob_uuid:
+            return []
+        hits = []
+        try:
+            await asyncio.sleep(self.oob_poll_wait)
+            url = f"https://webhook.site/token/{self.oob_uuid}/requests"
+            async with session.get(url, timeout=15) as r:
+                if r.status != 200:
+                    return []
+                data = await r.json(content_type=None)
+            for req in (data or {}).get('data', []) or []:
+                hay = str(req.get('url', '')) + str(req.get('query', ''))
+                if self.value in hay:
+                    hits.append(str(req.get('url', ''))[:160])
+        except Exception as e:
+            logger.debug(f"OOB poll failed: {e}")
+        return hits
     def _browser_probe(self, url: str, canary: str) -> Optional[Dict]:
         from playwright.sync_api import sync_playwright
         try:
@@ -216,6 +251,19 @@ class OpenRedirectValidator:
                 if progress_callback:
                     progress_callback((idx + 1) / total,
                                       f"[{idx + 1}/{total}] {url} -> {len([r for r in results if r['URL'].startswith(url)])} hit(s)")
+            # OOB: confirm end-to-end navigation to the external host
+            if self.oob_uuid and results:
+                if progress_callback:
+                    progress_callback(0.97, "Polling OOB callback host (webhook.site)...")
+                callbacks = await self._poll_oob(session)
+                if callbacks:
+                    results.append({
+                        'URL': 'OOB callback', 'Result': 'CONFIRMED',
+                        'Class': 'oob-callback',
+                        'Sink': f'redirect followed to external host: {callbacks[0]}',
+                        'Method': 'oob-callback',
+                        'Note': 'end-to-end: navigation landed on webhook.site with our canary',
+                    })
         if progress_callback:
             confirmed = len([r for r in results if r['Result'] == 'CONFIRMED'])
             progress_callback(1.0, f"Done: {confirmed} confirmed open redirects, {len(results) - confirmed} potential")

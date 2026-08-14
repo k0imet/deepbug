@@ -25,7 +25,7 @@ from app.utils.logger import get_logger
 
 logger = get_logger()
 
-_REDIRECT_PARAMS = [
+_REDIRECT_PARAMS = ['g', 'r', 'l', 'to', 'link2', 'target_url', 'redirect_url', 'redirect_uri',
     'url', 'redirect', 'next', 'return', 'return_url', 'return_to', 'dest',
     'destination', 'goto', 'target', 'rurl', 'qurl', 'link', 'out', 'view',
     'dir', 'continue', 'callback', 'redir', 'redirect_url', 'image_url',
