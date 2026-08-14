@@ -186,7 +186,8 @@ else:
     with a1:
         selection = st.selectbox("Result set:", [s[0] for s in flat_sections])
     with a2:
-        mode = st.selectbox("Mode:", ["summary", "triage", "prioritize", "suggest_next"],
+        mode = st.selectbox("Mode:", ["summary", "triage", "prioritize", "suggest_next",
+                                      "verify", "exploit_chain"],
                             format_func=lambda m: m.replace('_', ' ').title())
 
     _sel = next((s for s in flat_sections if s[0] == selection), None)

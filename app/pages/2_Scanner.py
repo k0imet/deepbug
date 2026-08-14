@@ -246,6 +246,13 @@ for line in (manual_urls or '').splitlines():
         scan_targets.append(url)
 scan_targets = list(dict.fromkeys(scan_targets))
 
+# ---- scope gate: nothing out-of-scope reaches nuclei ----
+_before_scope = len(scan_targets)
+scan_targets = project_manager.filter_targets_by_scope(scan_targets)
+_dropped_scope = _before_scope - len(scan_targets)
+if _dropped_scope:
+    st.warning(f"🚫 Removed {_dropped_scope} out-of-scope URL(s) before scanning.")
+
 source_total = sum(source_counts.values())
 st.caption(f"🎯 **{len(scan_targets)} unique URLs** ready to scan (from {source_total} collected across "
            f"{len([k for k, v in enabled.items() if v])} source(s)).")

@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 BUILTIN_PATTERNS: Dict[str, str] = {
     "xss": r"(?i)(\?|&)(q|s|search|query|keyword|keywords|term|name|value|input|comment|message|text|title|content|view|item|cat|category|err|error|callback|jsonp|qry)=",
     "sqli": r"(?i)(\?|&)(id|uid|user|userid|user_id|item|cat|category|product|prod|order|order_id|num|number|article|post|postid|page_id|doc|document_id|news|thread|topic)=(\d+|'|\")",
+    "nosqli": r"(?i)((\?|&)[a-z_]+\[\$(ne|eq|gt|gte|lt|lte|in|nin|regex|exists|where|elemMatch|all|size|type|mod|nor|and|or|not)\]=|"
+              r"(\?|&)[a-z_]+=\$?(ne|where|gt|gte|lt|lte|in|regex)($|&)|"
+              r"%24(ne|where|gt|gte|lt|lte|in|regex)(=|&|$)|"
+              r"\$\{?(ne|where|gt|in|regex)\}?['\"]?[:=]|"
+              r"' ?&& ?this\.|' ?%26%26 ?this\.|' ?\|\| ?'|\\\"\\\$|admin' ?\|\| ?'|' ?%26%26 ?this\.)",
     "ssrf": r"(?i)(\?|&)(url|uri|link|src|source|dest|destination|target|redirect|redirect_uri|redirect_url|return|return_to|returnto|next|goto|callback|callback_url|continue|forward|feed|load|fetch|proxy|host|site|domain|image|img|file_url|endpoint|api_url|webhook)=",
     "lfi": r"(?i)(\?|&)(file|path|filepath|filename|dir|directory|folder|page|pg|doc|document|include|template|view|content|layout|load|read|download|root|style|module|lang|locale)=",
     "rce": r"(?i)(\?|&)(cmd|command|exec|execute|run|ping|ip|host|shell|system|code|eval|daemon|dir|action|module|option|patch|process|job|task)=",
@@ -38,6 +43,7 @@ BUILTIN_PATTERNS: Dict[str, str] = {
 PATTERN_CATEGORIES = {
     "xss": ["xss", "xss-params", "reflected-params"],
     "sqli": ["sqli", "sql-injection", "sql-errors"],
+    "nosqli": ["nosqli", "nosql-injection", "mongodb-injection"],
     "ssrf": ["ssrf", "redirect", "open-redirect", "url-params"],
     "lfi": ["lfi", "path-traversal", "file-params"],
     "rce": ["rce", "command-injection", "exec-params"],
@@ -194,6 +200,7 @@ class GFScanner:
             "gf_filtered_urls": pd.DataFrame(),
             "gf_xss_candidates": pd.DataFrame(),
             "gf_sqli_candidates": pd.DataFrame(),
+            "gf_nosqli_candidates": pd.DataFrame(),
             "gf_ssrf_candidates": pd.DataFrame(),
             "gf_lfi_candidates": pd.DataFrame(),
             "gf_rce_candidates": pd.DataFrame(),
@@ -220,6 +227,7 @@ class GFScanner:
             category_map = {
                 "xss": "gf_xss_candidates",
                 "sqli": "gf_sqli_candidates",
+                "nosqli": "gf_nosqli_candidates",
                 "ssrf": "gf_ssrf_candidates",
                 "lfi": "gf_lfi_candidates",
                 "rce": "gf_rce_candidates",

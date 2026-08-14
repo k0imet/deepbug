@@ -50,6 +50,7 @@ try:
     from app.modules.tools.endpoint_validator import sanitize_endpoints, EndpointValidator
     from app.modules.tools.js_gf_secret_scanner import JSGFSecretScanner
     from app.modules.tools.secret_fp_corpus import FalsePositiveCorpus
+    from app.modules.tools.api_key_scanner import ApiKeyScanner
     from app.modules.tools.endpoint_engine import (
         EndpointExtractor, SmartEndpointValidator,
         extract_sourcemap_url, unpack_sourcemap, enumerate_webpack_chunks,
@@ -62,6 +63,7 @@ except ImportError:  # pragma: no cover - streamlit pages import as `modules.too
     from modules.tools.endpoint_validator import sanitize_endpoints, EndpointValidator
     from modules.tools.js_gf_secret_scanner import JSGFSecretScanner
     from modules.tools.secret_fp_corpus import FalsePositiveCorpus
+    from modules.tools.api_key_scanner import ApiKeyScanner
     from modules.tools.endpoint_engine import (
         EndpointExtractor, SmartEndpointValidator,
         extract_sourcemap_url, unpack_sourcemap, enumerate_webpack_chunks,
@@ -392,9 +394,11 @@ VENDOR_LIB_SIGNATURES = [
 # 1) SPA client-side routes -> forced-browsing candidates.
 #    All patterns bounded (no unbounded .* / [^)]*) - v3.1 hardening rules.
 SPA_ROUTE_PATTERNS = [
-    r'\bpath\s*:\s*[\'"](/[^\'"]{1,120})[\'"]',                      # { path: '/admin' } (react-router/vue-router/angular)
+    r'\bpath\s*:\s*[\'"](/[^\'"]{1,120})[\'"]',                      # { path: '/admin' } (react-router/vue-router)
     r'<Route[^>]{0,200}?\bpath\s*=\s*[\'"](/[^\'"]{1,120})[\'"]',    # JSX <Route path='/...'>
     r'\b(?:redirectTo|component)\s*:\s*[^,]{0,60}?[\'"](/[^\'"]{1,120})[\'"]\s*,\s*pathMatch',  # angular redirects
+    r'`(/[^`$]{1,120})`',                                            # angular/minified template-literal paths (`/score-board`)
+    r'\brouterLink[^,]{0,10},\s*(?:wT\()?`(/[^`]{1,120})`',          # minified `routerLink`,wT(`/x`) forms
 ]
 # routes worth probing server-side (authZ gaps hide here)
 ROUTE_ADMIN_KEYWORDS = re.compile(
@@ -471,6 +475,11 @@ class JSAnalyzer:
         self.probe_swagger = config.get('js_probe_swagger', True)
         self.scope_hosts: Optional[Set[str]] = None
         self.gf_secret_scanner = JSGFSecretScanner(config)
+        try:
+            self.api_key_scanner = ApiKeyScanner(config)
+        except Exception as e:
+            logger.warning(f"API key scanner unavailable: {e}")
+            self.api_key_scanner = None
 
         # ---- Efficiency guards (anti-hang) ----
         # esprima costs roughly 38 s/MB. The old 1.5MB ceiling therefore
@@ -817,6 +826,7 @@ class JSAnalyzer:
             'js_files': [],
             'endpoints': [],
             'secrets': [],
+            'api_keys': [],
             'graphql_endpoints': [],
             'websocket_endpoints': [],
             'source_map_flags': [],
@@ -909,6 +919,7 @@ class JSAnalyzer:
                 discovered_specs.update(per['specs'])
                 swagger_ui_hosts.update(per['ui'])
                 results['secrets'].extend(per['secrets'])
+                results['api_keys'].extend(per['api_keys'])
                 results['frameworks'].extend(per['frameworks'])
                 results['prototype_pollution'].extend(per['proto'])
                 results['dom_clobbering'].extend(per['clobbing'])
@@ -929,6 +940,7 @@ class JSAnalyzer:
                                       f"{results['vendor_skipped']} vendor skipped | "
                                       f"{len(all_reqs)} endpoints | "
                                       f"{len(results['secrets'])} secrets | "
+                                      f"{len(results['api_keys'])} API keys | "
                                       f"{len(results['prototype_pollution'])} proto vectors")
 
             # ============================================================
@@ -1518,11 +1530,16 @@ class JSAnalyzer:
     def _analyze_single_file(self, url: str, js_content: str) -> Dict[str, Any]:
         """ALL per-file CPU analysis in one call - designed to run in a worker thread."""
         out = {'endpoints': [], 'maps': set(), 'chunks': set(), 'specs': set(), 'ui': set(),
-               'secrets': [], 'frameworks': [], 'proto': [], 'clobbing': [], 'postmsg': [],
+               'secrets': [], 'api_keys': [], 'frameworks': [], 'proto': [], 'clobbing': [], 'postmsg': [],
                'dangerous': [], 'jsonp': [], 'rendering': [], 'csp': [], 'library': None,
                'routes': [], 'nonprod': [], 'jwts': [],
                'file': {'url': url, 'size': len(js_content),
                         'size_human': self._human_readable_size(len(js_content))}}
+
+        # Persist the fetched body (capped at the scan window) so downstream
+        # scans - API keys, JWT audit, etc. - can re-run from cache instead of
+        # re-fetching. Stored under js_files results on the page.
+        out['file']['content'] = js_content[:self.scan_max_bytes]
 
         # ---- Vendor fast-path ----
         if self.skip_vendor:
@@ -1558,6 +1575,10 @@ class JSAnalyzer:
         line_index = self._line_index(scan)
 
         out['secrets'] = self._extract_secrets(scan, source_url=url)
+        if self.api_key_scanner is not None:
+            out['api_keys'] = self.api_key_scanner.scan_js_content(scan, source_url=url)
+        else:
+            out['api_keys'] = []
         out['frameworks'] = self._detect_frameworks(scan, url)
         out['proto'] = self._detect_prototype_pollution(scan, url, line_index)
         out['clobbing'] = self._detect_dom_clobbering(scan, url, line_index)
@@ -1680,6 +1701,27 @@ class JSAnalyzer:
                 'line', 'context', 'source', 'confidence', 'entropy'
             ])
 
+        api_keys_data = results.get('api_keys', [])
+        if api_keys_data:
+            api_keys_df = pd.DataFrame([{
+                'type': k.get('type', 'API Key'),
+                'service': k.get('service', ''),
+                'key_name': k.get('key_name', ''),
+                'value': k.get('value', ''),
+                'severity': k.get('severity', 'MEDIUM'),
+                'line': k.get('line', 0),
+                'context': k.get('context', ''),
+                'source': k.get('source', ''),
+                'confidence': k.get('confidence', 'high'),
+                'entropy': k.get('entropy', 0),
+                'verification': k.get('verification', ''),
+            } for k in api_keys_data])
+        else:
+            api_keys_df = pd.DataFrame(columns=[
+                'type', 'service', 'key_name', 'value', 'severity',
+                'line', 'context', 'source', 'confidence', 'entropy', 'verification'
+            ])
+
         sourcemap_rows = []
         for req in results.get('source_map_flags', []):
             sourcemap_rows.append({
@@ -1748,6 +1790,7 @@ class JSAnalyzer:
             'js_files': js_files_df,
             'js_discovered_endpoints': endpoints_df,
             'js_sensitive_data_findings': secrets_df,
+            'js_api_keys': api_keys_df,
             'js_source_maps': sourcemap_df,
             'js_priority_endpoints': priority_df,
             'js_graphql_endpoints': graphql_df,
@@ -1803,6 +1846,10 @@ class JSAnalyzer:
             'js_sensitive_data_findings': pd.DataFrame(columns=[
                 'type', 'provider', 'pattern_name', 'value', 'severity',
                 'line', 'context', 'source', 'confidence', 'entropy'
+            ]),
+            'js_api_keys': pd.DataFrame(columns=[
+                'type', 'service', 'key_name', 'value', 'severity',
+                'line', 'context', 'source', 'confidence', 'entropy', 'verification'
             ]),
             'js_source_maps': pd.DataFrame(columns=['source_url', 'source_map_url', 'confidence']),
             'js_priority_endpoints': pd.DataFrame(columns=[

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from app.modules.utils import load_config
 from app.modules.project_manager import ProjectManager
+from app.modules.integrations.replay_targets import build_replay_targets
 from app.utils.theme import inject_theme, app_header, get_palette
 
 CONFIG = load_config()
@@ -76,7 +77,7 @@ def _burp_client(base_url: str, api_key: str):
     """Cached per (url, key) so the connection survives reruns."""
     cache = st.session_state.get('burp_client')
     if cache is not None and st.session_state.get('burp_client_key') == (base_url, api_key):
-        return cache
+        return cache, None
     BurpClient, err = _load_burp()
     if BurpClient is None:
         return None, err
@@ -92,7 +93,7 @@ def _burp_client(base_url: str, api_key: str):
 def _caido_client(base_url: str, pat: str):
     cache = st.session_state.get('caido_client')
     if cache is not None and st.session_state.get('caido_client_key') == (base_url, pat):
-        return cache
+        return cache, None
     CaidoClient, err = _load_caido()
     if CaidoClient is None:
         return None, err
@@ -345,35 +346,56 @@ st.markdown("#### 🚀 Send endpoints to Caido Replay")
 if not target_list:
     st.info("No targets in this project yet — add one in **📂 Projects** first.")
 else:
-    c1, c2 = st.columns([2, 1])
+    c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         caido_target = st.selectbox("Target", target_list, key="intg_caido_target")
     with c2:
-        st.caption("Collects URLs from live hosts + JS-discovered endpoints.")
+        caido_max = st.number_input("Max endpoints", 10, 2000, 250,
+                                    key="intg_caido_max")
+    with c3:
+        st.caption("Selects high-value JS-discovered endpoints: API-ish paths, "
+                   "gated (401/403/405/5xx), GraphQL, param'd & POST. "
+                   "Static assets, chunk/namespace noise and plain SPA routes "
+                   "are filtered out and deduplicated by path.")
+        include_pages = st.checkbox("Include plain page routes", value=False,
+                                    key="intg_caido_pages")
+        include_static = st.checkbox("Include static assets", value=False,
+                                     key="intg_caido_static")
 
-    if st.button("Send endpoints to Caido Replay", key="intg_caido_send"):
-        urls = []
-        live = project_manager.load_scan_results('live_hosts', caido_target)
-        if isinstance(live, pd.DataFrame) and 'URL' in live.columns and not live.empty:
-            urls += live['URL'].dropna().astype(str).tolist()
-        js = project_manager.load_scan_results('js_analysis', caido_target)
-        if isinstance(js, dict):
-            ep = js.get('js_discovered_endpoints')
-            if isinstance(ep, pd.DataFrame) and 'endpoint' in ep.columns and not ep.empty:
-                urls += ep['endpoint'].dropna().astype(str).tolist()
-        endpoints = project_manager.load_scan_results('js_discovered_endpoints', caido_target)
-        if isinstance(endpoints, pd.DataFrame) and 'endpoint' in endpoints.columns and not endpoints.empty:
-            urls += endpoints['endpoint'].dropna().astype(str).tolist()
-        urls = _dedupe_urls(urls)
+    # ---- live preview of what would be sent ----
+    endpoints = project_manager.load_scan_results('js_discovered_endpoints', caido_target)
+    selection = {}
+    if isinstance(endpoints, pd.DataFrame) and not endpoints.empty:
+        # scope gate first: never forward out-of-scope endpoints to Caido
+        endpoints, dropped_scope = project_manager._filter_df_by_scope(endpoints)
+        selection = build_replay_targets(
+            endpoints, max_targets=int(caido_max),
+            include_pages=include_pages, include_static=include_static)
+        selection['dropped_scope'] = dropped_scope
+    if selection.get('targets'):
+        note = ''
+        if selection.get('dropped_scope'):
+            note = f" 🚫 {selection['dropped_scope']} out-of-scope endpoint(s) removed."
+        st.caption(f"From {selection['total_seen']} endpoints → "
+                   f"**{len(selection['targets'])}** selected.{note} "
+                   f"Skipped: {selection['skipped']}")
+        with st.expander(f"Preview ({len(selection['targets'])})"):
+            prev = pd.DataFrame([{'score': t['score'], 'status': t['status'],
+                                  'category': t['category'], 'method': t['method'],
+                                  'url': t['url']} for t in selection['targets']])
+            st.dataframe(prev, use_container_width=True)
 
-        if not urls:
-            st.warning("No URLs to send — run Reconnaissance (live hosts / JS "
-                       "analysis) for this target first.")
+    if st.button("Send endpoints to Caido Replay", key="intg_caido_send",
+                 disabled=not bool(selection.get('targets'))):
+        if not selection.get('targets'):
+            st.warning("No endpoints to send — run JS Analysis (and ideally "
+                       "**Validate Endpoints**) for this target first.")
         else:
             client, err = _caido_client(caido_url, caido_pat or CONFIG.get('caido_pat') or "")
             if client is None:
                 st.warning(err)
             else:
+                urls = [t['url'] for t in selection['targets']]
                 with st.spinner(f"Importing {len(urls)} endpoints into Caido Replay..."):
                     try:
                         res = client.import_replay_sessions(urls)

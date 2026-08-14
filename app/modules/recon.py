@@ -143,6 +143,8 @@ class Reconnaissance:
         if scope_manager:
             urls = scope_manager.filter_targets(urls)
             logger.info(f"JS analysis: {len(urls)} URLs after scope filtering")
+            # host-gate the JS downloader with the project's scope rules too
+            self.js_analyzer.scope_hosts = set(scope_manager.get_scope_hosts())
 
         if not urls:
             logger.info("No URLs provided for JavaScript analysis.")

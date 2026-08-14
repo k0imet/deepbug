@@ -41,9 +41,12 @@ _GQL_ERROR_SIGNS = re.compile(
     re.IGNORECASE,
 )
 
-# markers of an exposed in-browser IDE
+# markers of a REAL exposed in-browser IDE (GraphiQL app assets / playground
+# react bundle). Plain prose mentioning "graphiql" on a docs page is NOT enough.
 _GQL_IDE_SIGNS = re.compile(
-    r"(graphiql|graphql[\s-]*playground|__APOLLO_|graphql-playground)",
+    r"(graphiql(?:\.min)?\.(?:js|css)|__GRAPHIQL__|"
+    r"graphql-playground-react|graphql-playground\.(?:js|css)|"
+    r"<div[^>]+id=[\"']graphiql|graphiql\.react)",
     re.IGNORECASE,
 )
 
@@ -102,8 +105,14 @@ class GraphQLScanner:
         Decide whether a response body proves a GraphQL endpoint.
         Returns a short reason string if confirmed, else None.
         A plain {"errors":[...]} REST response is NOT enough — the error must be
-        GraphQL-shaped, or __typename must have resolved.
+        GraphQL-shaped, or __typename must have resolved. S3/XML error pages
+        (NoSuchKey, MethodNotAllowed, AccessDenied) are explicitly excluded.
         """
+        if not text:
+            return None
+        if '<Error>' in text or '<Code>NoSuchKey</Code>' in text or \
+           'MethodNotAllowed' in text or '<Code>AccessDenied' in text:
+            return None
         try:
             data = json.loads(text)
         except Exception:
@@ -125,6 +134,23 @@ class GraphQLScanner:
         # exposed IDE (GraphiQL / Playground) served as HTML
         if text and _GQL_IDE_SIGNS.search(text):
             return 'graphql_ide'
+
+        # auth-gated GraphQL: 401/403 JSON with an "errors" array + errorType
+        # (AWS AppSync style). Not confirmable via validation, but it IS a
+        # GraphQL API - surface it so it can be tested with valid tokens.
+        try:
+            d = json.loads(text)
+            if isinstance(d, dict) and isinstance(d.get('errors'), list) and d['errors']:
+                joined = ' '.join(str(e.get('message', '')) if isinstance(e, dict) else str(e)
+                                  for e in d['errors'])
+                if joined and ('authorization' in joined.lower() or
+                               'authenticated' in joined.lower() or
+                               'unauthorized' in joined.lower() or
+                               'token' in joined.lower() or
+                               'forbidden' in joined.lower()):
+                    return 'gated_auth'
+        except Exception:
+            pass
         return None
 
     async def _detect_endpoint_async(self, session: aiohttp.ClientSession, base_url: str,
@@ -136,7 +162,7 @@ class GraphQLScanner:
             try:
                 async with session.post(url, json=self.verify_payload,
                                         timeout=self.timeout) as resp:
-                    if resp.status in (200, 400, 405, 422):
+                    if resp.status in (200, 400, 405, 422, 401, 403):
                         reason = self._confirm_graphql(await resp.text())
                         if reason:
                             logger.info(f"GraphQL endpoint [{reason}]: {url}")
@@ -148,10 +174,11 @@ class GraphQLScanner:
             try:
                 async with session.get(url, params={'query': '{__typename}'},
                                        timeout=self.timeout) as resp:
-                    reason = self._confirm_graphql(await resp.text())
-                    if reason:
-                        logger.info(f"GraphQL endpoint via GET [{reason}]: {url}")
-                        return url
+                    if resp.status in (200, 400, 405, 422, 401, 403):
+                        reason = self._confirm_graphql(await resp.text())
+                        if reason:
+                            logger.info(f"GraphQL endpoint via GET [{reason}]: {url}")
+                            return url
             except Exception:
                 pass
         return None

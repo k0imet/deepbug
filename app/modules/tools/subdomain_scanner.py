@@ -557,7 +557,6 @@ class SubdomainScanner:
             str(self.httpx_path), '-l', temp_input, '-json', '-o', temp_output,
             '-silent', '-follow-redirects', '-title', '-tech-detect',
             '-status-code', '-content-length', '-web-server',
-            '-header', 'User-Agent: Mozilla/5.0 (compatible; SecurityProbe/1.0) -BugBounty-bitoasis ',
             '-t', str(threads),
             '-timeout', '8',
             '-rl', str(rate),
@@ -610,7 +609,7 @@ class SubdomainScanner:
         if not self.httpx_path.is_file() or not subdomains:
             return []
 
-        default_ports = ['443', '80']
+        default_ports = ['443']  # 443-only by default; extra ports only when explicitly requested
         if extra_ports:
             port_list = list(dict.fromkeys(default_ports + extra_ports))
         else:
@@ -664,15 +663,8 @@ class SubdomainScanner:
                 f_in.write('\n'.join(subdomains) + '\n')
             with tempfile.NamedTemporaryFile(mode='w+', delete=False) as f_out:
                 temp_output = f_out.name
-            cmd = [
-                str(self.httpx_path), '-l', temp_input, '-json', '-o', temp_output,
-                '-silent', '-follow-redirects', '-title', '-tech-detect',
-                '-status-code', '-content-length', '-web-server',
-                '-header', 'User-Agent: Mozilla/5.0 (compatible; SecurityProbe/1.0) -BugBounty-bitoasis ',
-                '-t', '100',      # threads
-                '-timeout', '8',  # per-request timeout (s) - dead hosts fail fast
-                '-rl', '500'      # rate limit (req/s)
-            ]
+            # 443-only by default - httpx otherwise probes [80,443] on every host
+            cmd = self._httpx_cmd(temp_input, temp_output, ['443'], threads=100, rate=500)
             self._run_command(cmd, 'Httpx', timeout=600,
                               progress_callback=lambda p, s: progress_callback(0.7 + p * 0.3, s) if progress_callback else None)
             return self._parse_httpx_output(temp_output)
@@ -715,8 +707,7 @@ class SubdomainScanner:
                 str(self.httpx_path), '-l', temp_input, '-json', '-o', temp_output,
                 '-silent', '-follow-redirects', '-title', '-tech-detect',
                 '-status-code', '-content-length', '-web-server',
-                '-header', 'User-Agent: Mozilla/5.0 (compatible; SecurityProbe/1.0) -BugBounty-bitoasis ',
-                '-t', '100',      # threads
+                    '-t', '100',      # threads
                 '-timeout', '8',  # per-request timeout (s) - dead hosts fail fast
                 '-rl', '500'      # rate limit (req/s)
             ]
