@@ -117,6 +117,7 @@ class LiveRestValidator:
         self.do_sql = bool(v.get('sql_probes', True))
         self.do_nosql = bool(v.get('nosql_probes', True))
         self.last_errors: List[str] = []
+        self.session = None  # optional AuthSession - injected into every probe
 
     # ------------------------------------------------------------------
     # endpoint selection - high-value first
@@ -238,22 +239,29 @@ class LiveRestValidator:
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
-    @staticmethod
-    async def _get(session, url) -> tuple:
+    def _auth_kwargs(self) -> Dict:
+        """Merge the optional AuthSession into aiohttp request kwargs."""
+        kw: Dict = {}
+        if self.session is not None and self.session.authenticated:
+            kw['headers'] = {**_HEADERS, **self.session.auth_headers()}
+            if self.session.cookies:
+                kw['cookies'] = dict(self.session.cookies)
+        else:
+            kw['headers'] = dict(_HEADERS)
+        return kw
+
+    async def _get(self, session, url) -> tuple:
         try:
-            async with session.get(url, headers=_HEADERS,
-                                   timeout=aiohttp.ClientTimeout(total=10),
-                                   allow_redirects=False) as r:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10),
+                                   allow_redirects=False, **self._auth_kwargs()) as r:
                 return r.status, (await r.text(errors='ignore'))[:2048]
         except Exception:
             return 0, ''
 
-    @staticmethod
-    async def _post_json(session, url, data) -> tuple:
+    async def _post_json(self, session, url, data) -> tuple:
         try:
-            async with session.post(url, json=data, headers=_HEADERS,
-                                    timeout=aiohttp.ClientTimeout(total=10),
-                                    allow_redirects=False) as r:
+            async with session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=10),
+                                    allow_redirects=False, **self._auth_kwargs()) as r:
                 return r.status, (await r.text(errors='ignore'))[:2048]
         except Exception:
             return 0, ''
@@ -332,11 +340,15 @@ class LiveRestValidator:
         return unique
 
     def scan(self, rows: List[Dict], target_host: str = '',
+             session=None,
              progress_callback: Optional[Callable[[float, str], None]] = None
              ) -> List[Dict]:
         """Sync entry: rows = js_discovered_endpoints records (dicts).
         target_host = only validate endpoints on this host (e.g. the target
-        domain) - third-party hosts found in bundles are skipped."""
+        domain). session = optional AuthSession; every probe then carries the
+        authenticated context (cookies + bearer)."""
+        if session is not None:
+            self.session = session
         endpoints = self._select_endpoints(rows, target_host)
         if not endpoints:
             return []
