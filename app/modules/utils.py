@@ -66,6 +66,7 @@ def load_config() -> Dict:
                 "getjs": "", "gf": "", "linkfinder": "", "paramspider": "",
                 "sqltimer": "", "amass": "", "ffuf": ""
             },
+            "user_agent_tag": "",
             "rate_limits": {"masscan": 1000},
             "sqltimer": {"sleep_time": 5, "threads": 10, "timeout_multiplier": 6, "timeout_buffer": 10}
         },

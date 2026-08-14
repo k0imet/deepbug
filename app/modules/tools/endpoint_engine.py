@@ -72,6 +72,37 @@ _LINK_REGEX = re.compile(
     re.VERBOSE,
 )
 
+# template literals with ${...} interpolation - the minified-Angular/fetch
+# form: `${hostServer}/rest/products/search?q=${e}`. Interpolation is stripped,
+# keeping the canonical path + query string for later validation/probing.
+_TEMPLATE_LINK = re.compile(r"`([^`]{1,160})`")
+_INTERPOLATION = re.compile(r"\$\{[^}]*\}")
+
+
+def _clean_template_literal(s: str) -> str:
+    """Strip ${...} interpolations; collapse a removed host prefix into /."""
+    out = _INTERPOLATION.sub("", s).strip()
+    if out.startswith("//"):
+        return "/" + out[2:]
+    return out
+
+
+def _iter_template_links(js: str):
+    """Yield the content of every backtick literal that contains ${...}.
+
+    Tries EVERY backtick as a literal opener (not just finditer's greedy
+    pairing): minified code like `a`;code(`b`) has unrelated literals whose
+    closing/opening backticks sit next to code, and a greedy pair match would
+    consume the real opener of the second literal.
+    """
+    ticks = [m.start() for m in re.finditer(r"`", js)]
+    for i in range(len(ticks) - 1):
+        content = js[ticks[i] + 1:ticks[i + 1]]
+        if not content or len(content) > 160:
+            continue
+        if "${" in content:
+            yield content
+
 # fetch("url", {...method...}) / fetch(`url`, ...)
 _FETCH_REGEX = re.compile(
     r"""fetch\s*\(\s*(?:"|'|`)([^"'`]+)(?:"|'|`)\s*
@@ -213,6 +244,12 @@ class EndpointExtractor:
         # --- generic string harvest (high recall, lower confidence) ---
         for m in _LINK_REGEX.finditer(js):
             add(m.group(1), "GET", "string", conf="low")
+
+        # --- template literals with ${...} interpolation ---
+        for raw in _iter_template_links(js):
+            cleaned = _clean_template_literal(raw)
+            if cleaned.startswith("/"):
+                add(cleaned, "GET", "template", conf="medium")
 
         return list(found.values())
 

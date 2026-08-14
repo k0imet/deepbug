@@ -119,5 +119,51 @@ if current_project:
         st.dataframe(pd.DataFrame(overview), width='stretch')
     else:
         st.info("No scan data found.")
+
+    # ------------------------------------------------------------------
+    # Scope rules editor — everything downstream (JS downloads, nuclei,
+    # param mining, IDOR, GraphQL, Caido Replay, evidence export) is
+    # filtered through these rules.
+    # ------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("🎯 Scope Rules")
+    st.caption("Only in-scope hosts reach scans, saves and exports. "
+               "Leave empty = everything allowed. Exclusions win over "
+               "in-scope entries (e.g. `*.redbull.com` + exclude `staging.redbull.com`).")
+    sm = project_manager._scope_manager
+    if sm is None:
+        st.info("No scope manager available for this project.")
+    else:
+        rules = sm.get_rules()
+        c1, c2 = st.columns(2)
+        with c1:
+            new_in = st.text_input("Add in-scope (domain or `*.wildcard`):",
+                                   key="scope_add_in", placeholder="*.example.com")
+            if st.button("➕ Add in-scope", key="scope_add_in_btn"):
+                entry = new_in.strip().lower()
+                if entry:
+                    sm.add_in_scope(entry)
+                    st.rerun()
+            new_ex = st.text_input("Add exclusion (domain or `*.wildcard`):",
+                                   key="scope_add_ex", placeholder="staging.example.com")
+            if st.button("➕ Add exclusion", key="scope_add_ex_btn"):
+                entry = new_ex.strip().lower()
+                if entry:
+                    sm.add_exclusion(entry)
+                    st.rerun()
+        with c2:
+            st.markdown("**Current rules**")
+            for kind, label in (('in_scope', 'In scope'), ('wildcard_scope', 'Wildcard'),
+                                ('exclusions', 'Excluded')):
+                items = rules.get(kind) or []
+                for it in items:
+                    st.markdown(f"- {label}: `{it}`")
+            if st.button("🗑️ Clear all scope rules", key="scope_clear"):
+                sm.clear()
+                st.rerun()
+        if rules.get('in_scope') or rules.get('wildcard_scope'):
+            st.success(f"Scope enforced: {len(rules.get('in_scope', [])) + len(rules.get('wildcard_scope', []))} "
+                       f"in-scope rule(s), {len(rules.get('exclusions', []))} exclusion(s). "
+                       "Recon/Scanner/Integration runs now drop out-of-scope targets.")
 else:
     st.warning("No project loaded. Use the sidebar to create or load one.")

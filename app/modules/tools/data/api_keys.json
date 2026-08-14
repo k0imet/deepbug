@@ -1,0 +1,1054 @@
+{
+ "source": "https://github.com/streaak/keyhacks (README.md) + gitleaks config regexes",
+ "generated": "2026-08-13",
+ "count": 89,
+ "entries": [
+  {
+   "service": "Slack Webhook",
+   "link": "https://api.slack.com/incoming-webhooks",
+   "keys": [
+    {
+     "name": "slack-webhook-url",
+     "regex": "(?:https?://)?hooks.slack.com/(?:services|workflows|triggers)/[A-Za-z0-9+/]{43,56}"
+    }
+   ],
+   "verification": "curl -s -X POST -H \"Content-type: application/json\" -d '{\"text\":\"\"}' \"https://hooks.slack.com/services/<TID>/<BID>/<TOKEN>\""
+  },
+  {
+   "service": "Slack API token",
+   "link": "https://api.slack.com/web",
+   "keys": [
+    {
+     "name": "slack-legacy-token",
+     "regex": "xox[os]-\\d+-\\d+-\\d+-[a-fA-F\\d]+"
+    },
+    {
+     "name": "slack-app-token",
+     "regex": "(?i)xapp-\\d-[A-Z0-9]+-\\d+-[a-z0-9]+"
+    },
+    {
+     "name": "slack-bot-token",
+     "regex": "xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*"
+    }
+   ],
+   "verification": "curl -sX POST \"https://slack.com/api/auth.test?token=xoxp-TOKEN_HERE&pretty=1\""
+  },
+  {
+   "service": "SauceLabs Username and access Key",
+   "link": "https://wiki.saucelabs.com/display/DOCS/Account+Methods",
+   "keys": [
+    {
+     "name": "saucelabs-access-key",
+     "regex": "\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b"
+    }
+   ],
+   "verification": "curl -u USERNAME:ACCESS_KEY https://saucelabs.com/rest/v1/users/USERNAME"
+  },
+  {
+   "service": "Facebook AppSecret",
+   "link": "",
+   "keys": [
+    {
+     "name": "facebook-secret",
+     "regex": "(?i)[\\w.-]{0,50}?(?:facebook)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-f0-9]{32})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "https://graph.facebook.com/oauth/access_token?client_id=ID_HERE&client_secret=SECRET_HERE&redirect_uri=&grant_type=client_credentials"
+  },
+  {
+   "service": "Facebook Access Token",
+   "link": "",
+   "keys": [
+    {
+     "name": "facebook-access-token",
+     "regex": "(?i)\\b(\\d{15,16}(\\||%)[0-9a-z\\-_]{27,40})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "https://developers.facebook.com/tools/debug/accesstoken/?access_token=ACCESS_TOKEN_HERE&version=v3.2"
+  },
+  {
+   "service": "Firebase",
+   "link": "https://firebase.google.com/",
+   "keys": [
+    {
+     "name": "firebase-web-api-key",
+     "regex": "\\bAIza[0-9A-Za-z\\-_]{35}\\b"
+    },
+    {
+     "name": "firebase-fcm-server-key",
+     "regex": "\\bAAAA[A-Za-z0-9_-]{7}:[A-Za-z0-9_-]{140}\\b"
+    }
+   ],
+   "verification": ""
+  },
+  {
+   "service": "Github Token",
+   "link": "https://developer.github.com/v3/",
+   "keys": [
+    {
+     "name": "github-pat",
+     "regex": "ghp_[0-9a-zA-Z]{36}"
+    },
+    {
+     "name": "github-fine-grained-pat",
+     "regex": "github_pat_\\w{82}"
+    }
+   ],
+   "verification": "curl -s -u \"user:apikey\" https://api.github.com/user\ncurl -s -H \"Authorization: token TOKEN_HERE\" \"https://api.github.com/users/USERNAME_HERE/orgs\"\n# Check scope of your api token\ncurl \"https://api.github.com/rate_limit\" -i -u \"user:apikey\" | grep \"X-OAuth-Scopes:\""
+  },
+  {
+   "service": "Github client id and client secret",
+   "link": "https://developer.github.com/v3/#oauth2-keysecret",
+   "keys": [
+    {
+     "name": "github-oauth",
+     "regex": "gho_[0-9a-zA-Z]{36}"
+    }
+   ],
+   "verification": "curl 'https://api.github.com/users/whatever?client_id=xxxx&client_secret=yyyy'"
+  },
+  {
+   "service": "Firebase Cloud Messaging",
+   "link": "https://firebase.google.com/docs/cloud-messaging",
+   "keys": [
+    {
+     "name": "fcm-legacy-server-key",
+     "regex": "\\bAAAA[A-Za-z0-9_-]{7}:[A-Za-z0-9_-]{140}\\b"
+    },
+    {
+     "name": "fcm-web-api-key",
+     "regex": "\\bAIza[0-9A-Za-z\\-_]{35}\\b"
+    }
+   ],
+   "verification": "curl -s -X POST --header \"Authorization: key=AI...\" --header \"Content-Type:application/json\" 'https://fcm.googleapis.com/fcm/send' -d '{\"registration_ids\":[\"1\"]}'"
+  },
+  {
+   "service": "GitHub private SSH key",
+   "link": "",
+   "keys": [
+    {
+     "name": "private-key",
+     "regex": "(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\\s\\S-]{64,}?KEY(?: BLOCK)?-----"
+    }
+   ],
+   "verification": "$ ssh -i <path to SSH private key> -T git@github.com\nHi <username>! You've successfully authenticated, but GitHub does not provide shell access."
+  },
+  {
+   "service": "Twilio Account_sid and Auth token",
+   "link": "https://www.twilio.com/docs/iam/api/account",
+   "keys": [
+    {
+     "name": "twilio-api-key",
+     "regex": "SK[0-9a-fA-F]{32}"
+    }
+   ],
+   "verification": "curl -X GET 'https://api.twilio.com/2010-04-01/Accounts.json' -u ACCOUNT_SID:AUTH_TOKEN"
+  },
+  {
+   "service": "Twitter API Secret",
+   "link": "https://developer.twitter.com/en/docs/basics/authentication/guides/bearer-tokens.html",
+   "keys": [
+    {
+     "name": "twitter-api-secret",
+     "regex": "(?i)[\\w.-]{0,50}?(?:twitter)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9]{50})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -u 'API key:API secret key' --data 'grant_type=client_credentials' 'https://api.twitter.com/oauth2/token'"
+  },
+  {
+   "service": "Twitter Bearer token",
+   "link": "https://developer.twitter.com/en/docs/accounts-and-users/subscribe-account-activity/api-reference/aaa-premium",
+   "keys": [
+    {
+     "name": "twitter-bearer-token",
+     "regex": "(?i)[\\w.-]{0,50}?(?:twitter)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(A{22}[a-zA-Z0-9%]{80,100})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl --request GET --url https://api.twitter.com/1.1/account_activity/all/subscriptions/count.json --header 'authorization: Bearer TOKEN'"
+  },
+  {
+   "service": "HubSpot API key",
+   "link": "https://developers.hubspot.com/docs/methods/owners/get_owners",
+   "keys": [
+    {
+     "name": "hubspot-api-key",
+     "regex": "(?i)[\\w.-]{0,50}?(?:hubspot)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "https://api.hubapi.com/owners/v2/owners?hapikey={keyhere}"
+  },
+  {
+   "service": "Infura API key",
+   "link": "https://docs.infura.io/infura/networks/ethereum/how-to/secure-a-project/project-id",
+   "keys": [
+    {
+     "name": "infura-project-id",
+     "regex": "(?i)infura[^a-z0-9]{0,20}[0-9a-f]{32}"
+    }
+   ],
+   "verification": "curl https://mainnet.infura.io/v3/<YOUR-API-KEY> -X POST -H \"Content-Type: application/json\" -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_accounts\",\"params\":[],\"id\":1}'"
+  },
+  {
+   "service": "Deviant Art Secret",
+   "link": "https://www.deviantart.com/developers/authentication",
+   "keys": [
+    {
+     "name": "deviantart-client-secret",
+     "regex": "(?i)deviantart[^a-z0-9]{0,20}[a-f0-9]{32}"
+    }
+   ],
+   "verification": "curl https://www.deviantart.com/oauth2/token -d grant_type=client_credentials -d client_id=ID_HERE -d client_secret=mysecret"
+  },
+  {
+   "service": "Deviant Art Access Token",
+   "link": "https://www.deviantart.com/developers/authentication",
+   "keys": [
+    {
+     "name": "deviantart-access-token",
+     "regex": "(?i)deviantart[^a-z0-9]{0,20}[a-f0-9]{32}"
+    }
+   ],
+   "verification": "curl https://www.deviantart.com/api/v1/oauth2/placebo -d access_token=Alph4num3r1ct0k3nv4lu3"
+  },
+  {
+   "service": "Pendo Integration Key",
+   "link": "https://help.pendo.io/resources/support-library/api/index.html?bash#authentication",
+   "keys": [
+    {
+     "name": "pendo-integration-key",
+     "regex": "(?i)pendo[^a-z0-9]{0,20}[a-f0-9]{8}"
+    }
+   ],
+   "verification": "curl -X GET https://app.pendo.io/api/v1/feature -H 'content-type: application/json' -H 'x-pendo-integration-key:KEY_HERE'\ncurl -X GET https://app.pendo.io/api/v1/metadata/schema/account -H 'content-type: application/json' -H 'x-pendo-integration-key:KEY_HERE'"
+  },
+  {
+   "service": "SendGrid API Token",
+   "link": "https://docs.sendgrid.com/api-reference",
+   "keys": [
+    {
+     "name": "sendgrid-api-token",
+     "regex": "(?i)\\b(SG\\.[a-z0-9=_\\-\\.]{66})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -X \"GET\" \"https://api.sendgrid.com/v3/scopes\" -H \"Authorization: Bearer SENDGRID_TOKEN-HERE\" -H \"Content-Type: application/json\""
+  },
+  {
+   "service": "Square",
+   "link": "https://squareup.com/",
+   "keys": [
+    {
+     "name": "square-access-token",
+     "regex": "\\b((?:EAAA|sq0atp-)[\\w-]{22,60})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl \"https://squareup.com/oauth2/revoke\" -d '{\"access_token\":\"[RANDOM_STRING]\",\"client_id\":\"[APP_ID]\"}'  -H \"Content-Type: application/json\" -H \"Authorization: Client [CLIENT_SECRET]\""
+  },
+  {
+   "service": "Contentful Access Token",
+   "link": "https://www.contentful.com/developers/docs/references/authentication",
+   "keys": [
+    {
+     "name": "contentful-delivery-api-token",
+     "regex": "(?i)[\\w.-]{0,50}?(?:contentful)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9=_\\-]{43})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -v https://cdn.contentful.com/spaces/SPACE_ID_HERE/entries\\?access_token\\=ACCESS_TOKEN_HERE"
+  },
+  {
+   "service": "Dropbox API",
+   "link": "https://www.dropbox.com/developers/documentation/http/documentation",
+   "keys": [
+    {
+     "name": "dropbox-api-token",
+     "regex": "(?i)[\\w.-]{0,50}?(?:dropbox)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9]{15})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    },
+    {
+     "name": "dropbox-long-lived-api-token",
+     "regex": "(?i)[\\w.-]{0,50}?(?:dropbox)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9]{11}(AAAAAAAAAA)[a-z0-9\\-_=]{43})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -X POST https://api.dropboxapi.com/2/users/get_current_account --header \"Authorization: Bearer TOKEN_HERE\""
+  },
+  {
+   "service": "AWS Access Key ID and Secret",
+   "link": "https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-profiles.html",
+   "keys": [
+    {
+     "name": "aws-access-token",
+     "regex": "\\b((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})\\b"
+    }
+   ],
+   "verification": "AWS_ACCESS_KEY_ID=xxxx AWS_SECRET_ACCESS_KEY=yyyy aws sts get-caller-identity"
+  },
+  {
+   "service": "Lokalise API Key",
+   "link": "https://app.lokalise.com/api2docs/curl/#resource-authentication",
+   "keys": [
+    {
+     "name": "lokalise-api-token",
+     "regex": "(?i)lokalise[^a-z0-9]{0,20}[a-f0-9]{32}"
+    }
+   ],
+   "verification": "--url https://api.lokalise.com/api2/projects/ \\\n  --header 'x-api-token: [API-KEY-HERE]'"
+  },
+  {
+   "service": "MailGun Private Key",
+   "link": "https://documentation.mailgun.com/en/latest/api_reference.html",
+   "keys": [
+    {
+     "name": "mailgun-private-api-token",
+     "regex": "(?i)[\\w.-]{0,50}?(?:mailgun)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(key-[a-f0-9]{32})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl --user 'api:YOUR_API_KEY' \"https://api.mailgun.net/v3/domains\""
+  },
+  {
+   "service": "FreshDesk API Key",
+   "link": "https://developers.freshdesk.com/api/#getting-started",
+   "keys": [
+    {
+     "name": "freshdesk-api-key",
+     "regex": "(?i)freshdesk[^a-z0-9]{0,20}[a-z0-9+/]{32}"
+    }
+   ],
+   "verification": "curl -v -u user@yourcompany.com:test -X GET 'https://domain.freshdesk.com/api/v2/groups/1'\nThis requires the API key in 'user@yourcompany.com', pass in 'test' and 'domain.freshdesk.com' to be the instance url of the target. In case you get a 403, try the endpoint api/v2/tickets, which is accessible for all keys."
+  },
+  {
+   "service": "JumpCloud API Key",
+   "link": "https://docs.jumpcloud.com/1.0/authentication-and-authorization/authentication-and-authorization-overview",
+   "keys": [
+    {
+     "name": "jumpcloud-api-key",
+     "regex": "(?i)jumpcloud[^a-z0-9]{0,20}[a-z0-9]{40}"
+    }
+   ],
+   "verification": "List systems:\ncurl -H \"x-api-key: APIKEYHERE\" \"https://console.jumpcloud.com/api/systems\"\ncurl -H \"x-api-key: APIKEYHERE\" \"https://console.jumpcloud.com/api/systemusers\"\ncurl -H \"x-api-key: APIKEYHERE\" \"https://console.jumpcloud.com/api/applications\""
+  },
+  {
+   "service": "Microsoft Azure Tenant",
+   "link": "",
+   "keys": [
+    {
+     "name": "azure-tenant-id",
+     "regex": "\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b"
+    }
+   ],
+   "verification": "CLIENT_ID: [0-9a-z\\-]{36}\nCLIENT_SECRET: [0-9A-Za-z\\+\\=]{40,50}\nTENANT_ID: [0-9a-z\\-]{36}"
+  },
+  {
+   "service": "Microsoft Shared Access Signatures (SAS)",
+   "link": "https://github.com/MicrosoftDocs/azure-docs/blob/master/articles/storage/common/storage-dotnet-shared-access-signature-part-1.md",
+   "keys": [
+    {
+     "name": "azure-sas-token",
+     "regex": "\\b(sig|se|sp|sv|spr|srt|st|sr)=[^&\\s\"\\']{8,}\\b"
+    }
+   ],
+   "verification": "static void UseAccountSAS(string sasToken)\n{\n    // Create new storage credentials using the SAS token.\n    StorageCredentials accountSAS = new StorageCredentials(sasToken);\n    // Use these credentials and the account name to create a Blob service client.\n    CloudStorageAccount accountWithSAS = new CloudStorageAccount(accountSAS, \"account-name\", endpointSuffix: null, useHttps: true);\n    CloudBl"
+  },
+  {
+   "service": "Microsoft Teams Webhook",
+   "link": "https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/connectors-using",
+   "keys": [
+    {
+     "name": "microsoft-teams-webhook",
+     "regex": "https://[a-z0-9]+\\.webhook\\.office\\.com/webhookb2/[a-z0-9]{8}-([a-z0-9]{4}-){3}[a-z0-9]{12}@[a-z0-9]{8}-([a-z0-9]{4}-){3}[a-z0-9]{12}/IncomingWebhook/[a-z0-9]{32}/[a-z0-9]{8}-([a-z0-9]{4}-){3}[a-z0-9]{12}"
+    }
+   ],
+   "verification": "curl -H \"Content-Type:application/json\" -d \"{'text':''}\" \"YOUR_WEBHOOK_URL\""
+  },
+  {
+   "service": "New Relic Personal API Key (NerdGraph)",
+   "link": "https://docs.newrelic.com/docs/apis/nerdgraph/get-started/introduction-new-relic-nerdgraph#endpoint",
+   "keys": [
+    {
+     "name": "new-relic-user-api-key",
+     "regex": "(?i)[\\w.-]{0,50}?(?:new-relic|newrelic|new_relic)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(NRAK-[a-z0-9]{27})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -X POST https://api.newrelic.com/graphql \\\n-H 'Content-Type: application/json' \\\n-H 'API-Key: YOUR_API_KEY' \\\n-d '{ \"query\":  \"{ requestContext { userId apiKey } }\" } '"
+  },
+  {
+   "service": "New Relic REST API",
+   "link": "https://docs.newrelic.com/docs/apis/rest-api-v2/application-examples-v2/list-your-app-id-metric-timeslice-data-v2",
+   "keys": [
+    {
+     "name": "new-relic-user-api-key",
+     "regex": "(?i)[\\w.-]{0,50}?(?:new-relic|newrelic|new_relic)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(NRAK-[a-z0-9]{27})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    },
+    {
+     "name": "new-relic-insert-key",
+     "regex": "(?i)[\\w.-]{0,50}?(?:new-relic|newrelic|new_relic)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(NRII-[a-z0-9-]{32})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -X GET 'https://api.newrelic.com/v2/applications.json' \\\n     -H \"X-Api-Key:${APIKEY}\" -i"
+  },
+  {
+   "service": "Heroku API key",
+   "link": "https://devcenter.heroku.com/articles/platform-api-quickstart",
+   "keys": [
+    {
+     "name": "heroku-api-key",
+     "regex": "(?i)[\\w.-]{0,50}?(?:heroku)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    },
+    {
+     "name": "heroku-api-key-v2",
+     "regex": "\\b((HRKU-AA[0-9a-zA-Z_-]{58}))(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -X POST https://api.heroku.com/apps -H \"Accept: application/vnd.heroku+json; version=3\" -H \"Authorization: Bearer API_KEY_HERE\""
+  },
+  {
+   "service": "Mapbox API key",
+   "link": "https://docs.mapbox.com/api/",
+   "keys": [
+    {
+     "name": "mapbox-api-token",
+     "regex": "(?i)[\\w.-]{0,50}?(?:mapbox)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}(pk\\.[a-z0-9]{60}\\.[a-z0-9]{22})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl \"https://api.mapbox.com/geocoding/v5/mapbox.places/Los%20Angeles.json?access_token=ACCESS_TOKEN\"\n\n#Check token validity\ncurl \"https://api.mapbox.com/tokens/v2?access_token=YOUR_MAPBOX_ACCESS_TOKEN\"\n\n#Get list of all tokens associated with an account. (only works if the token is a Secret Token (sk), and has the appropiate scope)\ncurl \"https://api.mapbox.com/tokens/v2/MAPBOX_USERNAME_HERE?acces"
+  },
+  {
+   "service": "Salesforce API key",
+   "link": "https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/quickstart_oauth.htm",
+   "keys": [
+    {
+     "name": "salesforce-api-key",
+     "regex": "(?i)salesforce[^a-z0-9]{0,20}[a-z0-9]{32}"
+    }
+   ],
+   "verification": "curl https://instance_name.salesforce.com/services/data/v20.0/ -H 'Authorization: Bearer access_token_here'"
+  },
+  {
+   "service": "Algolia API key",
+   "link": "https://www.algolia.com/doc/rest-api/search/#overview",
+   "keys": [
+    {
+     "name": "algolia-api-key",
+     "regex": "(?i)[\\w.-]{0,50}?(?:algolia)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9]{32})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl --request GET \\\n  --url https://<example-app-id>-1.algolianet.com/1/indexes/ \\\n  --header 'content-type: application/json' \\\n  --header 'x-algolia-api-key: <example-key>' \\\n  --header 'x-algolia-application-id: <example-appid>'"
+  },
+  {
+   "service": "Zapier Webhook Token",
+   "link": "https://zapier.com/help/how-get-started-webhooks-zapier/",
+   "keys": [
+    {
+     "name": "zapier-webhook-url",
+     "regex": "https?://hooks\\.zapier\\.com/hooks/catch/[0-9]+/[A-Za-z0-9]+/?"
+    }
+   ],
+   "verification": "curl -H \"Accept: application/json\" -H \"Content-Type: application/json\" -X POST -d '{\"name\":\"streaak\"}' \"webhook_url_here\""
+  },
+  {
+   "service": "Pagerduty API token",
+   "link": "https://support.pagerduty.com/docs/using-the-api",
+   "keys": [
+    {
+     "name": "pagerduty-api-token",
+     "regex": "\\b(pdy_[a-z0-9]{20})\\b"
+    }
+   ],
+   "verification": "curl -H \"Accept: application/vnd.pagerduty+json;version=2\"  -H \"Authorization: Token token=TOKEN_HERE\" -X GET  \"https://api.pagerduty.com/schedules\""
+  },
+  {
+   "service": "BrowserStack Access Key",
+   "link": "https://www.browserstack.com/automate/rest-api",
+   "keys": [
+    {
+     "name": "browserstack-access-key",
+     "regex": "(?i)browserstack[^a-z0-9]{0,20}[a-z0-9]{20}"
+    }
+   ],
+   "verification": "curl -u \"USERNAME:ACCESS_KEY\" https://api.browserstack.com/automate/plan.json"
+  },
+  {
+   "service": "Google Maps API key",
+   "link": "https://developers.google.com/maps/documentation/javascript/get-api-key",
+   "keys": [
+    {
+     "name": "google-maps-api-key",
+     "regex": "\\bAIza[0-9A-Za-z\\-_]{35}\\b"
+    }
+   ],
+   "verification": ""
+  },
+  {
+   "service": "Google Recaptcha key",
+   "link": "https://developers.google.com/recaptcha/docs/verify",
+   "keys": [
+    {
+     "name": "google-recaptcha-key",
+     "regex": "\\b6L[0-9A-Za-z_-]{38}\\b"
+    }
+   ],
+   "verification": "https://www.google.com/recaptcha/api/siteverify"
+  },
+  {
+   "service": "Google Cloud Service Account credentials",
+   "link": "https://cloud.google.com/docs/authentication/production",
+   "keys": [
+    {
+     "name": "gcp-sa-private-key",
+     "regex": "\"type\"\\s*:\\s*\"service_account\""
+    }
+   ],
+   "verification": "$ cat service_account.json\n{\n  \"type\": \"service_account\",\n  \"project_id\": \"...\",\n  \"private_key_id\": \"...\",\n  \"private_key\": \"-----BEGIN PRIVATE KEY-----...-----END PRIVATE KEY-----\\n\",\n  \"client_email\": \"...\",\n  \"client_id\": \"...\",\n  \"auth_uri\": \"https://accounts.google.com/o/oauth2/auth\",\n  \"token_uri\": \"https://oauth2.googleapis.com/token\",\n  \"auth_provider_x509_cert_url\": \"https://www.googleap"
+  },
+  {
+   "service": "Branch.IO Key and Secret",
+   "link": "https://docs.branch.io/pages/apps/deep-linking-api/#app-read",
+   "keys": [
+    {
+     "name": "branch-app-key",
+     "regex": "(?:key|secret)_live_[A-Za-z0-9]{32}"
+    },
+    {
+     "name": "branch-key",
+     "regex": "(?:key|secret)_test_[A-Za-z0-9]{32}"
+    }
+   ],
+   "verification": "https://api2.branch.io/v1/app/KEY_HERE?branch_secret=SECRET_HERE"
+  },
+  {
+   "service": "Bing Maps API Key",
+   "link": "https://docs.microsoft.com/en-us/bingmaps/rest-services/locations/find-a-location-by-address",
+   "keys": [
+    {
+     "name": "bing-maps-api-key",
+     "regex": "(?i)bingmaps[^a-z0-9]{0,20}[a-z0-9]{32,64}"
+    }
+   ],
+   "verification": "https://dev.virtualearth.net/REST/v1/Locations?CountryRegion=US&adminDistrict=WA&locality=Somewhere&postalCode=98001&addressLine=100%20Main%20St.&key=API_KEY"
+  },
+  {
+   "service": "Bit.ly Access token",
+   "link": "https://dev.bitly.com/authentication.html",
+   "keys": [
+    {
+     "name": "bitly-access-token",
+     "regex": "(?i)bitly[^a-z0-9]{0,20}[a-f0-9]{32}"
+    }
+   ],
+   "verification": "https://api-ssl.bitly.com/v3/shorten?access_token=ACCESS_TOKEN&longUrl=https://www.google.com"
+  },
+  {
+   "service": "Buildkite Access token",
+   "link": "https://buildkite.com/docs/apis/rest-api",
+   "keys": [
+    {
+     "name": "buildkite-access-token",
+     "regex": "(?i)buildkite[^a-z0-9]{0,20}[a-z0-9]{40}"
+    }
+   ],
+   "verification": "curl -H \"Authorization: Bearer ACCESS_TOKEN\" \\\nhttps://api.buildkite.com/v2/access-token"
+  },
+  {
+   "service": "ButterCMS-API-Key",
+   "link": "https://buttercms.com/docs/api/#authentication",
+   "keys": [
+    {
+     "name": "buttercms-api-key",
+     "regex": "(?i)buttercms[^a-z0-9]{0,20}[a-z0-9]{40}"
+    }
+   ],
+   "verification": "curl -X GET 'https://api.buttercms.com/v2/posts/?auth_token=your_api_token'"
+  },
+  {
+   "service": "Asana Access token",
+   "link": "https://asana.com/developers/documentation/getting-started/auth#personal-access-token",
+   "keys": [
+    {
+     "name": "asana-access-token",
+     "regex": "\\b[0-9]{1,2}/[0-9]{16}\\b"
+    }
+   ],
+   "verification": "curl -H \"Authorization: Bearer ACCESS_TOKEN\" https://app.asana.com/api/1.0/users/me"
+  },
+  {
+   "service": "Zendesk Access token",
+   "link": "https://support.zendesk.com/hc/en-us/articles/203663836-Using-OAuth-authentication-with-your-application",
+   "keys": [
+    {
+     "name": "zendesk-secret-key",
+     "regex": "(?i)[\\w.-]{0,50}?(?:zendesk)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9]{40})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl https://{subdomain}.zendesk.com/api/v2/tickets.json \\\n  -H \"Authorization: Bearer ACCESS_TOKEN\""
+  },
+  {
+   "service": "Zendesk Api Key",
+   "link": "https://developer.zendesk.com/api-reference/ticketing/introduction/",
+   "keys": [
+    {
+     "name": "zendesk-secret-key",
+     "regex": "(?i)[\\w.-]{0,50}?(?:zendesk)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9]{40})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl https://{target}.zendesk.com/api/v2/users.json \\  -u support@{target}.com/token:{here your token}"
+  },
+  {
+   "service": "MailChimp API Key",
+   "link": "https://developer.mailchimp.com/documentation/mailchimp/reference/overview/",
+   "keys": [
+    {
+     "name": "mailchimp-api-key",
+     "regex": "(?i)[\\w.-]{0,50}?(?:MailchimpSDK.initialize|mailchimp)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-f0-9]{32}-us\\d\\d)(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl --request GET --url 'https://<dc>.api.mailchimp.com/3.0/' --user 'anystring:<API_KEY>' --include"
+  },
+  {
+   "service": "WPEngine API Key",
+   "link": "https://wpengineapi.com/",
+   "keys": [
+    {
+     "name": "wpengine-api-key",
+     "regex": "(?i)wpengine[^a-z0-9]{0,20}[a-z0-9]{32}"
+    }
+   ],
+   "verification": "curl \"https://api.wpengine.com/1.2/?method=site&account_name=ACCOUNT_NAME&wpe_apikey=WPENGINE_APIKEY\""
+  },
+  {
+   "service": "DataDog API key",
+   "link": "https://docs.datadoghq.com/api/",
+   "keys": [
+    {
+     "name": "datadog-access-token",
+     "regex": "(?i)[\\w.-]{0,50}?(?:datadog)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9]{40})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl \"https://api.datadoghq.com/api/v1/dashboard?api_key=<api_key>&application_key=<application_key>\""
+  },
+  {
+   "service": "Delighted API key",
+   "link": "https://app.delighted.com/docs/api",
+   "keys": [
+    {
+     "name": "delighted-api-key",
+     "regex": "(?i)delighted[^a-z0-9]{0,20}[a-z0-9]{16,32}"
+    }
+   ],
+   "verification": "curl https://api.delighted.com/v1/metrics.json \\\n  -H \"Content-Type: application/json\" \\\n  -u YOUR_DELIGHTED_API_KEY:"
+  },
+  {
+   "service": "Travis CI API token",
+   "link": "https://developer.travis-ci.com/gettingstarted",
+   "keys": [
+    {
+     "name": "travisci-access-token",
+     "regex": "(?i)[\\w.-]{0,50}?(?:travis)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9]{22})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -H \"Travis-API-Version: 3\" -H \"Authorization: token <TOKEN>\" https://api.travis-ci.org/repos"
+  },
+  {
+   "service": "Telegram Bot API Token",
+   "link": "https://core.telegram.org/bots/api#making-requests",
+   "keys": [
+    {
+     "name": "telegram-bot-api-token",
+     "regex": "(?i)[\\w.-]{0,50}?(?:telegr)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([0-9]{5,16}:(?-i:A)[a-z0-9_\\-]{34})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl https://api.telegram.org/bot<TOKEN>/getMe"
+  },
+  {
+   "service": "WakaTime API Key",
+   "link": "https://wakatime.com/developers",
+   "keys": [
+    {
+     "name": "wakatime-api-key",
+     "regex": "(?i)wakatime[^a-z0-9]{0,20}[a-f0-9]{40}"
+    }
+   ],
+   "verification": "curl \"https://wakatime.com/api/v1/users/current?api_key=KEY_HERE\""
+  },
+  {
+   "service": "Sonarcloud Token",
+   "link": "https://sonarcloud.io/web_api",
+   "keys": [
+    {
+     "name": "sonarcloud-token",
+     "regex": "(?i)sonar[^a-z0-9]{0,20}[a-f0-9]{40}"
+    }
+   ],
+   "verification": "curl -u <token>: \"https://sonarcloud.io/api/authentication/validate\""
+  },
+  {
+   "service": "Spotify Access Token",
+   "link": "https://developer.spotify.com/documentation/general/guides/authorization-guide/",
+   "keys": [
+    {
+     "name": "spotify-access-token",
+     "regex": "\\bBQ[A-Za-z0-9\\-_]{20,}\\b"
+    }
+   ],
+   "verification": "curl -H \"Authorization: Bearer <ACCESS_TOKEN>\" https://api.spotify.com/v1/me"
+  },
+  {
+   "service": "Instagram Basic Display API Access Token",
+   "link": "https://developers.facebook.com/docs/instagram-basic-display-api/getting-started",
+   "keys": [
+    {
+     "name": "instagram-long-lived-token",
+     "regex": "\\bIGQVJ[A-Za-z0-9_\\-]{20,}\\b"
+    }
+   ],
+   "verification": "curl -X GET 'https://graph.instagram.com/{user-id}?fields=id,username&access_token={access-token}'"
+  },
+  {
+   "service": "Instagram Graph API Access Token",
+   "link": "https://developers.facebook.com/docs/instagram-api/getting-started",
+   "keys": [
+    {
+     "name": "instagram-long-lived-token",
+     "regex": "\\bIGQVJ[A-Za-z0-9_\\-]{20,}\\b"
+    }
+   ],
+   "verification": "curl -i -X GET 'https://graph.facebook.com/v8.0/me/accounts?access_token={access-token}'"
+  },
+  {
+   "service": "Gitlab personal access token",
+   "link": "https://docs.gitlab.com/ee/api/README.html#personal-access-tokens",
+   "keys": [
+    {
+     "name": "gitlab-pat",
+     "regex": "glpat-[\\w-]{20}"
+    },
+    {
+     "name": "gitlab-pat-routable",
+     "regex": "\\bglpat-[0-9a-zA-Z_-]{27,300}\\.[0-9a-z]{2}[0-9a-z]{7}\\b"
+    }
+   ],
+   "verification": "curl \"https://gitlab.example.com/api/v4/projects?private_token=<your_access_token>\""
+  },
+  {
+   "service": "GitLab runner registration token",
+   "link": "https://docs.gitlab.com/runner/register/",
+   "keys": [
+    {
+     "name": "gitlab-rrt",
+     "regex": "GR1348941[\\w-]{20}"
+    },
+    {
+     "name": "gitlab-runner-authentication-token",
+     "regex": "glrt-[0-9a-zA-Z_\\-]{20}"
+    }
+   ],
+   "verification": "docker run --rm gitlab/gitlab-runner register \\\n  --non-interactive \\\n  --executor \"docker\" \\\n  --docker-image alpine:latest \\\n  --url \"https://gitlab.com/\" \\\n  --registration-token \"PROJECT_REGISTRATION_TOKEN\" \\\n  --description \"keyhacks-test\" \\\n  --maintenance-note \"Testing token with keyhacks\" \\\n  --tag-list \"docker,aws\" \\\n  --run-untagged=\"true\" \\\n  --locked=\"false\" \\\n  --access-level=\"not_pro"
+  },
+  {
+   "service": "Paypal client id and secret key",
+   "link": "https://developer.paypal.com/docs/api/get-an-access-token-curl/",
+   "keys": [
+    {
+     "name": "paypal-client-id",
+     "regex": "(?i)paypal[^a-z0-9]{0,20}(A[A-Za-z0-9]{31})"
+    },
+    {
+     "name": "paypal-client-secret",
+     "regex": "(?i)paypal[^a-z0-9]{0,20}(E[A-Za-z0-9]{31})"
+    }
+   ],
+   "verification": "curl -v https://api.sandbox.paypal.com/v1/oauth2/token \\\n   -H \"Accept: application/json\" \\\n   -H \"Accept-Language: en_US\" \\\n   -u \"client_id:secret\" \\\n   -d \"grant_type=client_credentials\""
+  },
+  {
+   "service": "Stripe Live Token",
+   "link": "https://stripe.com/docs/api/authentication",
+   "keys": [
+    {
+     "name": "stripe-access-token",
+     "regex": "\\b((?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl https://api.stripe.com/v1/charges -u token_here:"
+  },
+  {
+   "service": "Razorpay API key and Secret key",
+   "link": "https://razorpay.com/docs/api/",
+   "keys": [
+    {
+     "name": "razorpay-key-id",
+     "regex": "\\brzp_(?:live|test)_[A-Za-z0-9]{14}\\b"
+    },
+    {
+     "name": "razorpay-secret",
+     "regex": "(?i)razorpay[^a-z0-9]{0,20}[a-f0-9]{40}"
+    }
+   ],
+   "verification": "curl -u <YOUR_KEY_ID>:<YOUR_KEY_SECRET> \\\n  https://api.razorpay.com/v1/payments"
+  },
+  {
+   "service": "CircleCI Access Token",
+   "link": "https://circleci.com/docs/api/#api-overview",
+   "keys": [
+    {
+     "name": "circleci-access-token",
+     "regex": "(?i)circleci[^a-z0-9]{0,20}[a-f0-9]{40}"
+    }
+   ],
+   "verification": "curl https://circleci.com/api/v1.1/me?circle-token=<TOKEN>"
+  },
+  {
+   "service": "Cloudflare API key",
+   "link": "https://api.cloudflare.com/#user-api-tokens-verify-token",
+   "keys": [
+    {
+     "name": "cloudflare-api-key",
+     "regex": "(?i)[\\w.-]{0,50}?(?:cloudflare)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9_-]{40})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    },
+    {
+     "name": "cloudflare-global-api-key",
+     "regex": "(?i)[\\w.-]{0,50}?(?:cloudflare)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-f0-9]{37})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -X GET \"https://api.cloudflare.com/client/v4/user/tokens/verify\" \\\n  -H \"Authorization: Bearer <YOUR_API_TOKEN>\""
+  },
+  {
+   "service": "Loqate API key",
+   "link": "https://www.loqate.com/resources/support/apis",
+   "keys": [
+    {
+     "name": "loqate-api-key",
+     "regex": "(?i)loqate[^a-z0-9]{0,20}[a-z0-9]{32}"
+    }
+   ],
+   "verification": "curl 'http://api.addressy.com/Capture/Interactive/Find/v1.00/json3.ws?Key=<KEY_HERE>&Countries=US,CA&Language=en&Limit=5&Text=BHAR'"
+  },
+  {
+   "service": "Ipstack API Key",
+   "link": "https://ipstack.com/documentation",
+   "keys": [
+    {
+     "name": "ipstack-api-key",
+     "regex": "(?i)ipstack[^a-z0-9]{0,20}[a-f0-9]{32}"
+    }
+   ],
+   "verification": "curl 'https://api.ipstack.com/{ip_address}?access_key={keyhere}'"
+  },
+  {
+   "service": "NPM token",
+   "link": "https://docs.npmjs.com/about-authentication-tokens",
+   "keys": [
+    {
+     "name": "npm-access-token",
+     "regex": "(?i)\\b(npm_[a-z0-9]{36})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "export NPM_TOKEN=\"00000000-0000-0000-0000-000000000000\"\necho \"//registry.npmjs.org/:_authToken=${NPM_TOKEN}\" > .npmrc\nnpm whoami"
+  },
+  {
+   "service": "OpsGenie API Key",
+   "link": "https://docs.opsgenie.com/docs/api-overview",
+   "keys": [
+    {
+     "name": "opsgenie-api-key",
+     "regex": "(?i)opsgenie[^a-z0-9]{0,20}[a-f0-9]{40}"
+    }
+   ],
+   "verification": "curl https://api.opsgenie.com/v2/alerts -H 'Authorization: GenieKey API_KEY'"
+  },
+  {
+   "service": "OPENAI API KEY",
+   "link": "https://platform.openai.com/docs/api-reference",
+   "keys": [
+    {
+     "name": "openai-api-key",
+     "regex": "\\b(sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})\\b|sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -X GET -H \"Authorization: Bearer YOUR_OPENAI_API_KEY\" https://api.openai.com/v1/files"
+  },
+  {
+   "service": "Keen.io API Key",
+   "link": "https://keen.io/docs/api/",
+   "keys": [
+    {
+     "name": "keen-api-key",
+     "regex": "(?i)keen[^a-z0-9]{0,20}[a-f0-9]{32}"
+    }
+   ],
+   "verification": "curl \"https://api.keen.io/3.0/projects/PROJECT_ID/events?api_key=READ_KEY\""
+  },
+  {
+   "service": "Calendly API Key",
+   "link": "https://developer.calendly.com/docs/",
+   "keys": [
+    {
+     "name": "calendly-api-key",
+     "regex": "(?i)calendly[^a-z0-9]{0,20}[a-zA-Z0-9]{32}"
+    }
+   ],
+   "verification": "curl --header \"X-TOKEN: <your_token>\" https://calendly.com/api/v1/users/me"
+  },
+  {
+   "service": "Azure Application Insights APP ID and API Key",
+   "link": "https://dev.applicationinsights.io/reference",
+   "keys": [
+    {
+     "name": "appinsights-app-id",
+     "regex": "\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b"
+    },
+    {
+     "name": "appinsights-api-key",
+     "regex": "(?i)(appinsights|applicationinsights)[^a-z0-9]{0,20}[a-zA-Z0-9]{32}"
+    }
+   ],
+   "verification": "curl -H \"x-api-key: {API_Key}\" \"https://api.applicationinsights.io/v1/apps/{APP_ID}/metrics/requests/count\""
+  },
+  {
+   "service": "Cypress record key",
+   "link": "https://docs.cypress.io/guides/dashboard/projects.html#Record-key",
+   "keys": [
+    {
+     "name": "cypress-record-key",
+     "regex": "\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b"
+    }
+   ],
+   "verification": "curl -i -s -k -X $'POST' \\\n    -H $'x-route-version: 4' -H $'x-os-name: darwin' -H $'x-cypress-version: 5.5.0' -H $'host: api.cypress.io' -H $'accept: application/json' -H $'content-type: application/json' -H $'Content-Length: 1433' -H $'Connection: close' \\\n    --data-binary $'{\\\"ci\\\":{\\\"params\\\":null,\\\"provider\\\":null},\\\"specs\\\":[\\\"cypress/integration/examples/actions.spec.js\\\",\\\"cypress/integra"
+  },
+  {
+   "service": "YouTube API Key",
+   "link": "https://developers.google.com/youtube/v3/docs/",
+   "keys": [
+    {
+     "name": "youtube-api-key",
+     "regex": "\\bAIza[0-9A-Za-z\\-_]{35}\\b"
+    }
+   ],
+   "verification": "curl -iLk 'https://www.googleapis.com/youtube/v3/activities?part=contentDetails&maxResults=25&channelId=UC-lHJZR3Gqxm24_Vd_AJ5Yw&key={KEY_HERE}'"
+  },
+  {
+   "service": "ABTasty API Key",
+   "link": "https://developers.abtasty.com/server-side.html#authentication",
+   "keys": [
+    {
+     "name": "abtasty-api-key",
+     "regex": "(?i)abtasty[^a-z0-9]{0,20}[a-z0-9]{32}"
+    }
+   ],
+   "verification": "curl \"api_endpoint_here\" -H \"x-api-key: your_api_key\""
+  },
+  {
+   "service": "Iterable API Key",
+   "link": "https://api.iterable.com/api/docs",
+   "keys": [
+    {
+     "name": "iterable-api-key",
+     "regex": "(?i)iterable[^a-z0-9]{0,20}[a-z0-9]{64}"
+    }
+   ],
+   "verification": "curl -H \"Api_Key: {API_KEY}\" https://api.iterable.com/api/export/data.json?dataTypeName=emailSend&range=Today&onlyFields=List.empty"
+  },
+  {
+   "service": "Amplitude API Keys",
+   "link": "https://help.amplitude.com/hc/en-us/articles/205406637-Export-API-Export-Your-Project-s-Event-Data",
+   "keys": [
+    {
+     "name": "amplitude-api-key",
+     "regex": "(?i)amplitude[^a-z0-9]{0,20}[a-zA-Z0-9]{32}"
+    }
+   ],
+   "verification": "curl -u API_Key:Secret_Key 'https://amplitude.com/api/2/export?start=20200201T5&end=20210203T20' >> yourfilename.zip"
+  },
+  {
+   "service": "Visual Studio App Center API Token",
+   "link": "https://docs.microsoft.com/en-us/appcenter/api-docs/",
+   "keys": [
+    {
+     "name": "appcenter-api-token",
+     "regex": "(?i)appcenter[^a-z0-9]{0,20}[a-f0-9]{40}"
+    }
+   ],
+   "verification": "curl -sX GET  \"https://api.appcenter.ms/v0.1/apps\" \\\n -H \"Content-Type: application/json\" \\\n -H \"X-Api-Token: {your_api_token}\""
+  },
+  {
+   "service": "WeGlot Api Key",
+   "link": "https://weglot.com/",
+   "keys": [
+    {
+     "name": "weglot-api-key",
+     "regex": "\\bwg_[a-f0-9]{32}\\b"
+    }
+   ],
+   "verification": "curl -X POST \\\n  'https://api.weglot.com/translate?api_key=my_api_key' \\\n  -H 'Content-Type: application/json' \\\n  -d '{  \n   \"l_from\":\"en\",\n   \"l_to\":\"fr\",\n   \"request_url\":\"https://www.website.com/\",\n   \"words\":[  \n      {\"w\":\"This is a blue car\", \"t\": 1},\n      {\"w\":\"This is a black car\", \"t\": 1}\n   ]\n}'"
+  },
+  {
+   "service": "PivotalTracker API Token",
+   "link": "https://www.pivotaltracker.com/help/api/#top",
+   "keys": [
+    {
+     "name": "pivotaltracker-api-token",
+     "regex": "(?i)pivotal[^a-z0-9]{0,20}[a-f0-9]{32}"
+    }
+   ],
+   "verification": "curl -X GET -H \"X-TrackerToken: $TOKEN\" \"https://www.pivotaltracker.com/services/v5/me?fields=%3Adefault\""
+  },
+  {
+   "service": "LinkedIn OAUTH",
+   "link": "https://docs.microsoft.com/en-us/linkedin/shared/authentication/client-credentials-flow?context=linkedin/context",
+   "keys": [
+    {
+     "name": "linkedin-client-id",
+     "regex": "(?i)[\\w.-]{0,50}?(?:linked[_-]?in)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9]{14})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    },
+    {
+     "name": "linkedin-client-secret",
+     "regex": "(?i)[\\w.-]{0,50}?(?:linked[_-]?in)(?:[ \\t\\w.-]{0,20})[\\s'\"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60'\"\\s=]{0,5}([a-z0-9]{16})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -XPOST -H \"Content-type: application/x-www-form-urlencoded\" -d 'grant_type=client_credentials&client_id=<client-ID>&client_secret=<client-secret>' 'https://www.linkedin.com/oauth/v2/accessToken'"
+  },
+  {
+   "service": "Help Scout OAUTH",
+   "link": "https://developer.helpscout.com/mailbox-api/overview/authentication/",
+   "keys": [
+    {
+     "name": "helpscout-client-secret",
+     "regex": "(?i)helpscout[^a-z0-9]{0,20}[a-z0-9]{32}"
+    }
+   ],
+   "verification": "curl -X POST https://api.helpscout.net/v2/oauth2/token \\\n    --data \"grant_type=client_credentials\" \\\n    --data \"client_id={application_id}\" \\\n    --data \"client_secret={application_secret}\""
+  },
+  {
+   "service": "Shodan Api Key",
+   "link": "https://developer.shodan.io/api/requirements",
+   "keys": [
+    {
+     "name": "shodan-api-key",
+     "regex": "(?i)shodan[^a-z0-9]{0,20}[a-f0-9]{32}"
+    }
+   ],
+   "verification": "curl -X GET \"https://api.shodan.io/notifier?key={YOUR_API_KEY}\""
+  },
+  {
+   "service": "Bazaarvoice Passkey",
+   "link": "https://developer.bazaarvoice.com/conversations-api/home",
+   "keys": [
+    {
+     "name": "bazaarvoice-passkey",
+     "regex": "(?i)bazaarvoice[^a-z0-9]{0,20}[a-z0-9]{16,32}"
+    }
+   ],
+   "verification": "curl 'https://which-cpv-api.bazaarvoice.com/clientInfo?conversationspasskey=<Passkey>' --insecure"
+  },
+  {
+   "service": "Grafana Access Token",
+   "link": "https://grafana.com/docs/grafana/latest/developers/http_api/user/",
+   "keys": [
+    {
+     "name": "grafana-api-key",
+     "regex": "(?i)\\b(eyJrIjoi[A-Za-z0-9]{70,400}={0,3})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    },
+    {
+     "name": "grafana-service-account-token",
+     "regex": "(?i)\\b(glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8})(?:[\\x60'\"\\s;]|\\\\[nr]|$)"
+    }
+   ],
+   "verification": "curl -s -H \"Authorization: Bearer your-api-key\" http://your-grafana-server-url.com/api/user"
+  }
+ ]
+}

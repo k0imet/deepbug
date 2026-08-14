@@ -9,7 +9,7 @@ DeepBug is a self-hosted, browser-based platform that streamlines the whole bug 
 ## ✨ Features
 
 * **📂 Projects** — Create, load, or delete projects. Every scan result is saved per project, per target, straight to disk.
-* **🔍 Reconnaissance** — 8 tabs of discovery: subdomain enumeration & takeover checks, port scanning, deep JavaScript analysis, vulnerability detection, cloud & infra probing, parameter mining, security headers, and advanced scans. Powered by **69 tool modules** in `app/modules/tools`.
+* **🔍 Reconnaissance** — 8 tabs of discovery: subdomain enumeration & takeover checks, port scanning, deep JavaScript analysis, vulnerability detection, cloud & infra probing, parameter mining, security headers, and advanced scans. Powered by **70 tool modules** in `app/modules/tools`.
 * **🛡️ Vulnerability Scanner** — Nuclei-based scanning with a live progress UI, results saved to disk and reloadable later. Targets pull from **every tool in the pipeline** (live hosts, JS endpoints, param-mined URLs, collected URLs, Caido/Burp history, GF candidates) with veteran controls: tags, severity filter, rate/concurrency, workflows, and a per-project custom template library (`custom_templates/`).
 * **📊 Dashboard** — KPIs, charts, target overview, detailed results, and recent activity across the active project.
 * **📄 Reporting** — One-click HTML report generation from all saved scan sections, with a download button.
@@ -25,7 +25,7 @@ The app ships with a sidebar navigation in canonical workflow order:
 2. **Reconnaissance** (`/recon`) — target picker (persisted per project) + 8 scan tabs:
    * 🌐 **Subdomain & Takeover** — subfinder + amass + CT logs in parallel, DNS resolution, httpx probing, takeover checks.
    * 🔌 **Port & Service Scan** — nmap / masscan / naabu.
-   * 📜 **JavaScript Analysis** — the v3.0 engine with 9 sub-tabs (overview, secrets & patterns, client-side vectors, endpoints, plus active validation for **prototype pollution, DOM XSS, CORS, open redirect, and SSRF**).
+   * 📜 **JavaScript Analysis** — the v3.0 engine with 10 sub-tabs (overview, secrets & patterns, client-side vectors, endpoints, plus active validation for **prototype pollution, DOM XSS, CORS, open redirect, and SSRF** — and a dedicated **API Keys** tab backed by the 89-service streaak/keyhacks corpus with precise key-format regexes).
    * 🔍 **Vulnerability Detection** — GF pattern scanning plus kxss confirmation.
    * ☁️ **Cloud & Infra** — cloud enumeration, Shodan, ASN/DNS OSINT.
    * 🔑 **Parameter Mining** — param mining and historical URL hunting.
@@ -136,7 +136,7 @@ deepbug/
 │   │   ├── recon.py          # Full-recon pipeline
 │   │   ├── reporting.py      # HTML report generation
 │   │   ├── utils.py          # Config loading, validators, parsers
-│   │   └── tools/            # 69 tool modules: scanners, validators, AI
+│   │   └── tools/            # 70 tool modules: scanners, validators, AI
 │   └── utils/                # Theme, logger, subprocess runner, cache, ...
 ├── .streamlit/config.toml    # Theme + server settings
 ├── projects/                 # Created at runtime: per-project data

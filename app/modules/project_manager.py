@@ -203,8 +203,13 @@ class ProjectManager:
     # DataFrame columns inspected for scope enforcement at save time.
     # Any row whose host in one of these columns is out-of-scope is dropped
     # BEFORE hitting disk - so out-of-scope data never reaches later scans.
-    SCOPE_COLUMNS = ['URL', 'url', 'Subdomain', 'subdomain', 'hostname', 'host',
-                     'endpoint', 'Domain', 'source_url', 'Input', 'source', 'matched_at']
+    # 'Matched_At'/'Target' cover nuclei output (scanner.py), 'Endpoint' the
+    # GraphQL endpoint saves. Columns that name the TARGET itself vs columns
+    # that merely record where a row was FOUND (provenance).
+    SCOPE_TARGET_COLUMNS = ['URL', 'url', 'endpoint', 'Endpoint', 'host',
+                            'hostname', 'Subdomain', 'subdomain', 'Domain',
+                            'Target', 'Matched_At', 'matched_at', 'Base']
+    SCOPE_PROVENANCE_COLUMNS = ['source_url', 'source', 'Input']
 
     def __init__(self, config: Dict):
         self.config = config
@@ -330,18 +335,26 @@ class ProjectManager:
     # ------------------------------------------------------------------
     def _filter_df_by_scope(self, df: pd.DataFrame) -> tuple:
         """
-        Drop rows whose host is out of scope. Returns (filtered_df, dropped_count).
+        Drop rows whose TARGET host is out of scope. Returns (filtered_df, dropped_count).
         No scope rules configured -> is_in_scope() is True for everything -> no-op.
+
+        Target columns (URL/endpoint/host/Domain/Target/Matched_At/Base...) are
+        authoritative: a row is dropped when ALL of its target columns are
+        out-of-scope. Provenance columns (source_url/source/Input - where the
+        row was FOUND) never veto a row.
         """
         if self._scope_manager is None or df is None or df.empty:
             return df, 0
-        col = next((c for c in self.SCOPE_COLUMNS if c in df.columns), None)
-        if col is None:
+        target_cols = [c for c in self.SCOPE_TARGET_COLUMNS if c in df.columns]
+        check_cols = target_cols or [c for c in self.SCOPE_PROVENANCE_COLUMNS if c in df.columns]
+        if not check_cols:
             return df, 0
         try:
-            mask = df[col].astype(str).apply(self._scope_manager.is_in_scope)
-            dropped = int((~mask).sum())
-            return df[mask].reset_index(drop=True), dropped
+            combined = pd.Series(False, index=df.index)
+            for col in check_cols:
+                combined |= df[col].astype(str).apply(self._scope_manager.is_in_scope)
+            dropped = int((~combined).sum())
+            return df[combined].reset_index(drop=True), dropped
         except Exception as e:
             logger.error(f"Scope filtering failed: {e}")
             return df, 0

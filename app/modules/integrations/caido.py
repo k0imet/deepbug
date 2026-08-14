@@ -122,7 +122,8 @@ class CaidoClient:
             return self._guest_token
         try:
             data = self._gql(
-                "mutation { loginAsGuest { token { accessToken } error { __typename } } }")
+                "mutation { loginAsGuest { token { accessToken } error { __typename } } }",
+                _with_token=False)
             payload = (data.get("data") or {}).get("loginAsGuest") or {}
             token = (payload.get("token") or {}).get("accessToken")
             if token:
@@ -162,9 +163,18 @@ class CaidoClient:
     def _raise_graphql_errors(data: Dict) -> None:
         errors = data.get("errors")
         if errors:
-            messages = "; ".join(
-                str(e.get("message", e)) for e in errors if isinstance(e, dict))
-            raise ValueError(f"Caido GraphQL error: {messages or errors}")
+            messages = []
+            for e in errors if isinstance(errors, list) else []:
+                if not isinstance(e, dict):
+                    messages.append(str(e))
+                    continue
+                msg = str(e.get("message", e))
+                ext = e.get("extensions") or {}
+                caido = ext.get("CAIDO") or {}
+                if caido.get("reason") or caido.get("code"):
+                    msg += f" [{caido.get('reason', '')}{':' + str(caido.get('code', '')) if caido.get('code') else ''}]"
+                messages.append(msg)
+            raise ValueError(f"Caido GraphQL error: {'; '.join(messages) or errors}")
 
     @staticmethod
     def _parse_url(url: str) -> Dict:
@@ -199,8 +209,14 @@ class CaidoClient:
                 if not parts["host"]:
                     raise ValueError(f"could not parse host from '{url}'")
                 session_id = self._create_session(name, idx, parts)
-                self._start_replay(session_id, parts)
                 ids.append(session_id)
+                try:
+                    self._start_replay(session_id, parts)
+                except Exception as exc:
+                    # Session exists in Caido even if the fire/replay step
+                    # failed - report it, don't lose the id.
+                    logger.error("Caido startReplayTask failed for %s (session %s): %s",
+                                 url, session_id, exc)
             except Exception as exc:
                 logger.error("Caido import failed for %s: %s", url, exc)
         return ids

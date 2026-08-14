@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import sys
+import time
 import os as _os_mod
 from pathlib import Path
 from typing import List, Dict, Any
@@ -17,12 +18,14 @@ from app.modules.utils import load_config, setup_logging, validate_domain, valid
 from app.modules.tools.subdomain_scanner import SubdomainScanner
 from app.modules.tools.port_scanner import PortScanner
 from app.modules.tools.js_analyzer import JSAnalyzer
+from app.modules.tools.api_key_scanner import ApiKeyScanner
 from app.modules.tools.webanalyze_scanner import WebanalyzeScanner
 from app.modules.tools.gf_scanner import GFScanner
 from app.modules.tools.cloud_enum import CloudScanner
 from app.modules.tools.param_miner import ParamMiner
 from app.modules.tools.cors_scanner import CORSHeadersScanner
 from app.modules.tools.graphql_scanner import GraphQLScanner
+from app.modules.tools.live_rest_validator import LiveRestValidator
 from app.modules.tools.idor_scanner import IDORScanner
 from app.modules.tools.dependency_confusion import DependencyConfusionScanner
 from app.modules.tools.kxss_scanner import KXSSScanner
@@ -103,11 +106,12 @@ else:
                                   key=f"recon_new_target_{current_project}").strip()
 
 # Persist the chosen target per project
-if target_domain and validate_domain(target_domain):
+_target_valid = validate_domain(target_domain) or validate_ip(target_domain)
+if target_domain and _target_valid:
     st.session_state[_pkey] = target_domain
 
-if not target_domain or not validate_domain(target_domain):
-    st.warning("Enter a valid domain.")
+if not target_domain or not _target_valid:
+    st.warning("Enter a valid domain or IP (e.g., example.com or 127.0.0.1).")
     st.stop()
 
 if target_domain:
@@ -142,12 +146,14 @@ if scope_manager:
 subdomain_scanner = SubdomainScanner(CONFIG)
 port_scanner = PortScanner(CONFIG)
 js_analyzer = JSAnalyzer(CONFIG)
+api_key_scanner = ApiKeyScanner(CONFIG)
 webanalyze_scanner = WebanalyzeScanner(CONFIG)
 gf_scanner = GFScanner(CONFIG)
 cloud_scanner = CloudScanner(CONFIG)
 param_miner = ParamMiner(CONFIG)
 cors_scanner = CORSHeadersScanner(CONFIG)
 graphql_scanner = GraphQLScanner(CONFIG)
+live_rest_validator = LiveRestValidator(CONFIG)
 idor_scanner = IDORScanner(CONFIG)
 dependency_scanner = DependencyConfusionScanner(CONFIG)
 kxss_scanner = KXSSScanner(CONFIG)
@@ -168,7 +174,9 @@ bypass403_engine = Bypass403Engine(CONFIG)
 github_leak_scanner = GitHubLeakScanner(CONFIG)
 secret_chainer = SecretChainer(CONFIG)
 
-js_analyzer.scope_hosts = {target_domain}
+# Host-gate the JS downloader with the project's scope rules when configured
+# (wildcards + explicit in-scope), falling back to the target domain.
+js_analyzer.scope_hosts = set(scope_manager.get_scope_hosts()) if (scope_manager and (scope_manager.in_scope or scope_manager.wildcard_scope)) else {target_domain}
 
 # Diagnostic: shows which subdomain_scanner.py is actually loaded (stale-import detector)
 import app.modules.tools.subdomain_scanner as _sd_mod
@@ -239,249 +247,389 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
 with tab1:
     st.subheader(f"Subdomain Enumeration: `{target_domain}`")
 
-    col1, col2, col3 = st.columns([1, 1, 2])
-    with col1:
-        use_amass = st.checkbox("Amass", value=True, help=f"Capped at {5} min (set below)")
-        use_subfinder = st.checkbox("Subfinder", value=True, help="Capped at 3 min")
-    with col2:
-        enable_ct = st.checkbox("CT Logs", value=True, help="Certificate Transparency")
-        enable_perm = st.checkbox("Permutations", value=False, help="dnsgen/altdns/builtin - slow, capped at 3000")
-        enable_wildcard = st.checkbox("Filter Wildcards", value=True)
-    with col3:
-        custom_ports = st.text_input("Httpx extra ports:", "8080,8443",
-                                      help="Comma-separated. Default: 80,443. Fewer ports = much faster probing.")
-        amass_cap = st.number_input("Amass time cap (min):", 1, 15, 5, key="amass_cap")
+    enum_mode = st.radio(
+        "Enumeration mode:",
+        ["Full subdomain scan", "Single URL (skip enumeration)"],
+        horizontal=True, key="enum_mode",
+        help="Single URL mode skips subdomain discovery entirely - the given "
+             "URL is probed and flows straight into ports/JS/vuln/param steps.")
 
-    st.caption("⚡ Passive sources run in parallel. Only DNS-resolved hosts get HTTP probed.")
-
-    if st.button("🚀 Run Subdomain Scan", key="run_subdomain_scan"):
-        with st.spinner("Scanning..."):
-            progress_bar = st.progress(0.0, text="Starting...")
-            try:
-                import asyncio
-                import concurrent.futures
-
-                # Parse custom ports
-                extra_ports = [p.strip() for p in custom_ports.split(",") if p.strip().isdigit()]
-
-                # ---- Phase 1: passive enumeration IN PARALLEL ----
-                # Wall time = slowest single source, not the sum of all three.
-                progress_bar.progress(0.05, "Passive enumeration (parallel: subfinder + amass + CT)...")
-                all_subdomains = []
-
-                def _fetch_ct():
-                    return asyncio.run(subdomain_scanner._fetch_ct_logs(target_domain))
-
-                futures = {}
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-                    if use_subfinder:
-                        futures[ex.submit(subdomain_scanner._run_subfinder, target_domain)] = ('subfinder_subdomains', 'Subfinder')
-                    if use_amass:
-                        futures[ex.submit(subdomain_scanner._run_amass, target_domain, None, amass_cap)] = ('amass_subdomains', 'Amass')
-                    if enable_ct:
-                        futures[ex.submit(_fetch_ct)] = ('ct_logs_subdomains', 'CT Logs')
-
-                    done = 0
-                    for fut in concurrent.futures.as_completed(futures):
-                        save_key, label = futures[fut]
-                        done += 1
-                        try:
-                            found = fut.result() or []
-                        except Exception as e:
-                            st.caption(f"⚠️ {label} failed: {e}")
-                            found = []
-                        if found:
-                            found = subdomain_scanner._sanitize_subdomain_list(found)
-                            found = subdomain_scanner.scope_validator.filter_subdomains(found)
-                            all_subdomains.extend(found)
-                            df = pd.DataFrame({'Subdomain': found})
-                            project_manager.save_scan_results(save_key, target_domain, df)
-                        progress_bar.progress(0.05 + 0.35 * (done / max(len(futures), 1)),
-                                              f"Passive: {label} done ({len(found)}).")
-
-                all_subdomains = sorted(set(all_subdomains))
-                if not all_subdomains:
-                    st.info("No subdomains found.")
-                    progress_bar.progress(1.0, "Done.")
-                    st.stop()
-
-                # ---- Phase 2: permutations (optional, capped in the scanner) ----
-                if enable_perm:
-                    progress_bar.progress(0.45, "Permutations (capped at 3000)...")
-                    perm_results = subdomain_scanner._run_permutation_scan(target_domain, all_subdomains)
-                    if perm_results:
-                        perm_results = subdomain_scanner._sanitize_subdomain_list(perm_results)
-                        perm_results = subdomain_scanner.scope_validator.filter_subdomains(perm_results)
-                        all_subdomains = sorted(set(all_subdomains) | set(perm_results))
-
-                # ---- SCOPE GATE: out-of-scope subdomains die here, before any
-                # resolution/probing and before any results are saved downstream ----
-                _before_scope = len(all_subdomains)
-                all_subdomains = project_manager.filter_targets_by_scope(all_subdomains)
-                if len(all_subdomains) < _before_scope:
-                    st.caption(f"🎯 Scope: dropped {_before_scope - len(all_subdomains)} out-of-scope subdomains")
-                if not all_subdomains:
-                    st.warning("All discovered subdomains are out of scope. Nothing to scan.")
-                    progress_bar.progress(1.0, "Done.")
-                    st.stop()
-
-                # ---- Phase 3: ONE DNS resolution pass (reused for wildcard filtering) ----
-                progress_bar.progress(0.60, f"Resolving {len(all_subdomains)} subdomains...")
-                dns_results = subdomain_scanner._run_dnsx(all_subdomains) or []
-
-                # Wildcard filter on the same result set - no second resolution pass
-                if enable_wildcard and dns_results:
-                    progress_bar.progress(0.72, "Filtering wildcards...")
-                    _filter = getattr(subdomain_scanner, '_filter_wildcard_from_dnsx', None)
-                    if _filter:
-                        dns_results = _filter(dns_results, target_domain)
-
-                if dns_results:
-                    df = pd.DataFrame(dns_results)
-                    project_manager.save_scan_results('resolved_subdomains', target_domain, df)
-
-                # ---- Phase 4: HTTP probe RESOLVED hosts only ----
-                # Probing unresolved hosts is the single biggest time sink - skip them.
-                resolved_hosts = [r['hostname'] for r in dns_results if r.get('hostname')]
-                probe_targets = resolved_hosts if resolved_hosts else all_subdomains
-                if not resolved_hosts:
-                    st.caption("⚠️ dnsx unavailable/failed - probing all subdomains (slower).")
-
-                progress_bar.progress(0.80, f"Probing HTTP/S on {len(probe_targets)} resolved hosts...")
-                _probe = getattr(subdomain_scanner, 'probe_live_hosts_chunked', None)
-                if _probe:
-                    # Chunked probing: httpx runs on manageable batches and the
-                    # results are merged - avoids httpx blowing up on thousands
-                    # of subdomains at once.
-                    http_results = _probe(
-                        probe_targets, extra_ports=None,
-                        chunk_size=150, concurrency=25, rate_limit=150,
-                        progress_callback=lambda p, m: progress_bar.progress(0.80 + p * 0.19, text=m))
-                else:
-                    _probe_legacy = getattr(subdomain_scanner, '_run_httpx_with_ports', None)
-                    if _probe_legacy:
-                        http_results = _probe_legacy(probe_targets, extra_ports=None)
+    if enum_mode == "Single URL (skip enumeration)":
+        single_url = st.text_input(
+            "In-scope URL (e.g. https://example.com or example.com):",
+            key="single_url_input",
+            placeholder=f"https://{target_domain}")
+        s2 = st.columns(2)
+        with s2[0]:
+            single_ports = st.text_input("Extra ports (comma-separated, optional):", "",
+                                         key="single_url_ports",
+                                         help="Default: the URL's scheme port (443 for https, 80 for http).")
+        with s2[1]:
+            st.caption("Probes the host once; result is saved as `live_hosts` and flows into "
+                       "Ports, JS Analysis, Vulnerability Detection, Parameter Mining and the Scanner.")
+        if st.button("🚀 Probe Single URL", key="run_single_url"):
+            with st.spinner("Probing..."):
+                progress_bar = st.progress(0.0, text="Starting...")
+                try:
+                    from urllib.parse import urlparse as _up
+                    raw = (single_url or '').strip()
+                    if not raw.startswith(('http://', 'https://')):
+                        raw = f'https://{raw}'
+                    p = _up(raw)
+                    host = (p.hostname or '').lower()
+                    scheme = p.scheme.lower()
+                    if not host or scheme not in ('http', 'https'):
+                        st.error(f"Invalid URL: {single_url}")
+                    elif not project_manager.filter_targets_by_scope([raw]):
+                        st.error(f"🚫 {raw} is out of scope for this project.")
                     else:
-                        st.caption("⚠️ Loaded SubdomainScanner is stale — using default ports. Restart Streamlit / update subdomain_scanner.py.")
-                        http_results = subdomain_scanner._run_httpx(probe_targets)
-                progress_bar.progress(0.995, "Finalizing live hosts...")
-                if http_results:
-                    df = pd.DataFrame(http_results)
-                    project_manager.save_scan_results('live_hosts', target_domain, df)
+                        port_list = []
+                        if p.port:
+                            port_list.append(str(p.port))
+                        else:
+                            port_list.append('443' if scheme == 'https' else '80')
+                        for x in (single_ports or '').split(','):
+                            x = x.strip()
+                            if x.isdigit():
+                                port_list.append(x)
+                        port_list = list(dict.fromkeys(port_list))
+                        progress_bar.progress(0.4, f"Probing {host} on ports {','.join(port_list)}...")
+                        _probe = getattr(subdomain_scanner, 'probe_live_hosts_chunked', None)
+                        if _probe:
+                            http_results = _probe([host], extra_ports=port_list,
+                                                  chunk_size=50, concurrency=10, rate_limit=50,
+                                                  progress_callback=lambda p, m: progress_bar.progress(0.4 + p * 0.4, text=m))
+                        else:
+                            http_results = subdomain_scanner._run_httpx_with_ports([host], extra_ports=port_list)
+                        # Ensure the user's exact URL survives even if the probe
+                        # returned a normalized variant.
+                        rows = [dict(r) for r in http_results]
+                        if not any(str(r.get('URL', '')).rstrip('/') == raw.rstrip('/') for r in rows):
+                            rows.insert(0, {'URL': raw, 'Input': host, 'StatusCode': '',
+                                            'Title': '', 'WebServer': '', 'ContentLength': '', 'Technologies': ''})
+                        if rows:
+                            progress_bar.progress(0.95, "Saving...")
+                            project_manager.save_scan_results('live_hosts', target_domain, pd.DataFrame(rows))
+                            project_manager.save_scan_results('resolved_subdomains', target_domain,
+                                                              pd.DataFrame([{'Subdomain': host, 'IP': ''}]))
+                            st.success(f"✅ Single URL ready: {host} probed on {','.join(port_list)} — "
+                                       f"{len(rows)} URL(s) saved as live_hosts. Continue in the other tabs.")
+                        else:
+                            st.warning("Probe returned no results — check the URL is reachable.")
+                        progress_bar.progress(1.0, "Done.")
+                except Exception as e:
+                    st.error(f"Single URL probe failed: {e}")
+    else:
 
-                progress_bar.progress(1.0, "Complete!")
-                st.success(f"Found {len(all_subdomains)} subdomains, {len(dns_results)} resolved, {len(http_results)} live hosts.")
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            use_amass = st.checkbox("Amass", value=True, help=f"Capped at {5} min (set below)")
+            use_subfinder = st.checkbox("Subfinder", value=True, help="Capped at 3 min")
+        with col2:
+            enable_ct = st.checkbox("CT Logs", value=True, help="Certificate Transparency")
+            enable_perm = st.checkbox("Permutations", value=False, help="dnsgen/altdns/builtin - slow, capped at 3000")
+            enable_wildcard = st.checkbox("Filter Wildcards", value=True)
+        with col3:
+            custom_ports = st.text_input("Httpx extra ports:", "",
+                                          help="Comma-separated. Default: 443 only (fast). Add e.g. 80,8080,8443 to probe more.")
+            amass_cap = st.number_input("Amass time cap (min):", 1, 15, 5, key="amass_cap")
 
-            except Exception as e:
-                st.error(f"Scan failed: {str(e)}")
+        st.caption("⚡ Passive sources run in parallel. Only DNS-resolved hosts get HTTP probed.")
 
-    # Display results
-    st.markdown("---")
-    for key, label in [('subfinder_subdomains', 'Subfinder'), ('amass_subdomains', 'Amass'),
-                       ('ct_logs_subdomains', 'CT Logs'), ('resolved_subdomains', 'Resolved DNS'),
-                       ('live_hosts', 'Live Hosts')]:
-        df = project_manager.load_scan_results(key, target_domain)
-        if isinstance(df, pd.DataFrame) and not df.empty:
-            with st.expander(f"{label} ({len(df)})"):
-                st.dataframe(df, use_container_width=True)
+        if st.button("🚀 Run Subdomain Scan", key="run_subdomain_scan"):
+            with st.spinner("Scanning..."):
+                progress_bar = st.progress(0.0, text="Starting...")
+                try:
+                    import asyncio
+                    import concurrent.futures
 
-    # Takeover
-    st.markdown("---")
-    st.subheader("🔁 Subdomain Takeover")
-    if st.button("Run Takeover Check", key="run_takeover"):
+                    # Parse custom ports
+                    extra_ports = [p.strip() for p in custom_ports.split(",") if p.strip().isdigit()]
+
+                    # ---- Phase 1: passive enumeration IN PARALLEL ----
+                    # Wall time = slowest single source, not the sum of all three.
+                    progress_bar.progress(0.05, "Passive enumeration (parallel: subfinder + amass + CT)...")
+                    all_subdomains = []
+
+                    def _fetch_ct():
+                        return asyncio.run(subdomain_scanner._fetch_ct_logs(target_domain))
+
+                    futures = {}
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+                        if use_subfinder:
+                            futures[ex.submit(subdomain_scanner._run_subfinder, target_domain)] = ('subfinder_subdomains', 'Subfinder')
+                        if use_amass:
+                            futures[ex.submit(subdomain_scanner._run_amass, target_domain, None, amass_cap)] = ('amass_subdomains', 'Amass')
+                        if enable_ct:
+                            futures[ex.submit(_fetch_ct)] = ('ct_logs_subdomains', 'CT Logs')
+
+                        done = 0
+                        for fut in concurrent.futures.as_completed(futures):
+                            save_key, label = futures[fut]
+                            done += 1
+                            try:
+                                found = fut.result() or []
+                            except Exception as e:
+                                st.caption(f"⚠️ {label} failed: {e}")
+                                found = []
+                            if found:
+                                found = subdomain_scanner._sanitize_subdomain_list(found)
+                                found = subdomain_scanner.scope_validator.filter_subdomains(found)
+                                all_subdomains.extend(found)
+                                df = pd.DataFrame({'Subdomain': found})
+                                project_manager.save_scan_results(save_key, target_domain, df)
+                            progress_bar.progress(0.05 + 0.35 * (done / max(len(futures), 1)),
+                                                  f"Passive: {label} done ({len(found)}).")
+
+                    all_subdomains = sorted(set(all_subdomains))
+                    if not all_subdomains:
+                        st.info("No subdomains found.")
+                        progress_bar.progress(1.0, "Done.")
+                        st.stop()
+
+                    # ---- Phase 2: permutations (optional, capped in the scanner) ----
+                    if enable_perm:
+                        progress_bar.progress(0.45, "Permutations (capped at 3000)...")
+                        perm_results = subdomain_scanner._run_permutation_scan(target_domain, all_subdomains)
+                        if perm_results:
+                            perm_results = subdomain_scanner._sanitize_subdomain_list(perm_results)
+                            perm_results = subdomain_scanner.scope_validator.filter_subdomains(perm_results)
+                            all_subdomains = sorted(set(all_subdomains) | set(perm_results))
+
+                    # ---- SCOPE GATE: out-of-scope subdomains die here, before any
+                    # resolution/probing and before any results are saved downstream ----
+                    _before_scope = len(all_subdomains)
+                    all_subdomains = project_manager.filter_targets_by_scope(all_subdomains)
+                    if len(all_subdomains) < _before_scope:
+                        st.caption(f"🎯 Scope: dropped {_before_scope - len(all_subdomains)} out-of-scope subdomains")
+                    if not all_subdomains:
+                        st.warning("All discovered subdomains are out of scope. Nothing to scan.")
+                        progress_bar.progress(1.0, "Done.")
+                        st.stop()
+
+                    # ---- Phase 3: ONE DNS resolution pass (reused for wildcard filtering) ----
+                    progress_bar.progress(0.60, f"Resolving {len(all_subdomains)} subdomains...")
+                    dns_results = subdomain_scanner._run_dnsx(all_subdomains) or []
+
+                    # Wildcard filter on the same result set - no second resolution pass
+                    if enable_wildcard and dns_results:
+                        progress_bar.progress(0.72, "Filtering wildcards...")
+                        _filter = getattr(subdomain_scanner, '_filter_wildcard_from_dnsx', None)
+                        if _filter:
+                            dns_results = _filter(dns_results, target_domain)
+
+                    if dns_results:
+                        df = pd.DataFrame(dns_results)
+                        project_manager.save_scan_results('resolved_subdomains', target_domain, df)
+
+                    # ---- Phase 4: HTTP probe RESOLVED hosts only ----
+                    # Probing unresolved hosts is the single biggest time sink - skip them.
+                    resolved_hosts = [r['hostname'] for r in dns_results if r.get('hostname')]
+                    probe_targets = resolved_hosts if resolved_hosts else all_subdomains
+                    if not resolved_hosts:
+                        st.caption("⚠️ dnsx unavailable/failed - probing all subdomains (slower).")
+
+                    progress_bar.progress(0.80, f"Probing HTTP/S on {len(probe_targets)} resolved hosts...")
+                    _probe = getattr(subdomain_scanner, 'probe_live_hosts_chunked', None)
+                    if _probe:
+                        # Chunked probing: httpx runs on manageable batches and the
+                        # results are merged - avoids httpx blowing up on thousands
+                        # of subdomains at once.
+                        http_results = _probe(
+                            probe_targets, extra_ports=extra_ports or None,
+                            chunk_size=150, concurrency=25, rate_limit=150,
+                            progress_callback=lambda p, m: progress_bar.progress(0.80 + p * 0.19, text=m))
+                    else:
+                        _probe_legacy = getattr(subdomain_scanner, '_run_httpx_with_ports', None)
+                        if _probe_legacy:
+                            http_results = _probe_legacy(probe_targets, extra_ports=extra_ports or None)
+                        else:
+                            st.caption("⚠️ Loaded SubdomainScanner is stale — using default ports. Restart Streamlit / update subdomain_scanner.py.")
+                            http_results = subdomain_scanner._run_httpx(probe_targets)
+                    progress_bar.progress(0.995, "Finalizing live hosts...")
+                    if http_results:
+                        df = pd.DataFrame(http_results)
+                        project_manager.save_scan_results('live_hosts', target_domain, df)
+
+                    progress_bar.progress(1.0, "Complete!")
+                    st.success(f"Found {len(all_subdomains)} subdomains, {len(dns_results)} resolved, {len(http_results)} live hosts.")
+
+                except Exception as e:
+                    st.error(f"Scan failed: {str(e)}")
+
+        # Display results
+        st.markdown("---")
+        for key, label in [('subfinder_subdomains', 'Subfinder'), ('amass_subdomains', 'Amass'),
+                           ('ct_logs_subdomains', 'CT Logs'), ('resolved_subdomains', 'Resolved DNS'),
+                           ('live_hosts', 'Live Hosts')]:
+            df = project_manager.load_scan_results(key, target_domain)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                with st.expander(f"{label} ({len(df)})"):
+                    st.dataframe(df, use_container_width=True)
+
+        # Takeover
+        st.markdown("---")
+        st.subheader("🔁 Subdomain Takeover")
+        if st.button("Run Takeover Check", key="run_takeover"):
+            resolved_df = project_manager.load_scan_results('resolved_subdomains', target_domain)
+            if isinstance(resolved_df, pd.DataFrame) and not resolved_df.empty:
+                with st.spinner("Checking..."):
+                    progress = st.progress(0.0)
+                    takeover_df = subdomain_scanner.run_subdomain_takeover_scan(
+                        resolved_df, progress_callback=lambda p, m: progress.progress(p, m)
+                    )
+                    if not takeover_df.empty:
+                        st.success(f"Found {len(takeover_df)} potential takeovers!")
+                        st.dataframe(takeover_df, use_container_width=True)
+                        project_manager.save_scan_results('subdomain_takeovers', target_domain, takeover_df)
+                    else:
+                        st.info("No takeovers detected.")
+            else:
+                st.warning("Run subdomain scan first.")
+
+        takeover_df = project_manager.load_scan_results('subdomain_takeovers', target_domain)
+        if isinstance(takeover_df, pd.DataFrame) and not takeover_df.empty:
+            st.markdown("**Stored Takeover Findings**")
+            st.dataframe(takeover_df, use_container_width=True)
+
+        # ---- ASN & DNS OSINT ----
+        st.markdown("---")
+        asn_df = project_manager.load_scan_results('asn_osint', target_domain)
+        if isinstance(asn_df, pd.DataFrame) and not asn_df.empty:
+            with st.expander(f"🛰️ ASN & DNS OSINT ({len(asn_df)})"):
+                st.dataframe(asn_df, use_container_width=True)
+        with st.expander("🛰️ Run ASN & DNS OSINT"):
+            st.caption("Keyless passive OSINT: BGPView ASN/prefix mapping, Hackertarget reverse lookups and "
+                       "DoH SPF/DMARC/DKIM/MX queries — finds origin IPs and infrastructure behind CDNs.")
+            if st.button("🛰️ Run", key="asn_osint_run"):
+                with st.spinner("Querying BGPView / DoH / reverse lookups..."):
+                    try:
+                        res = asn_osint_scanner.scan_sync(target_domain)
+                        rows = []
+                        for a in res.get('asns', []):
+                            rows.append({'Type': 'ASN', 'Value': a.get('asn', ''), 'Detail': a.get('org', '')})
+                        for ip in res.get('origin_ips', []):
+                            rows.append({'Type': 'Origin IP', 'Value': ip, 'Detail': 'apex A record'})
+                        for rng in res.get('ipv4_ranges', []):
+                            rows.append({'Type': 'IPv4 Range', 'Value': rng, 'Detail': 'ASN prefix'})
+                        for rng in res.get('ipv6_ranges', []):
+                            rows.append({'Type': 'IPv6 Range', 'Value': rng, 'Detail': 'ASN prefix'})
+                        spf = res.get('spf', {})
+                        if spf.get('record'):
+                            rows.append({'Type': 'SPF', 'Value': spf['record'], 'Detail': f"all={spf.get('all', '')}"})
+                        for inc in spf.get('include', []):
+                            rows.append({'Type': 'SPF Include', 'Value': inc, 'Detail': ''})
+                        for h in res.get('mx_hosts', []):
+                            rows.append({'Type': 'MX Host', 'Value': h, 'Detail': ''})
+                        dmarc = res.get('dmarc', {})
+                        if dmarc.get('record'):
+                            rows.append({'Type': 'DMARC', 'Value': dmarc['record'],
+                                         'Detail': f"p={dmarc.get('p', '')}"})
+                        for dk in res.get('dkim', []):
+                            rows.append({'Type': 'DKIM', 'Value': dk.get('selector', ''),
+                                         'Detail': (dk.get('record') or '')[:120]})
+                        new_asn_df = pd.DataFrame(rows)
+                        if not new_asn_df.empty:
+                            project_manager.save_scan_results('asn_osint', target_domain, new_asn_df)
+                            st.success(f"ASN/DNS OSINT complete — {len(new_asn_df)} records ({res.get('totals', {})})")
+                            st.dataframe(new_asn_df, use_container_width=True)
+                        else:
+                            st.info("No ASN/DNS OSINT data returned.")
+                    except Exception as e:
+                        st.error(f"ASN & DNS OSINT failed: {e}")
+
+        # ---- GitHub Subdomain OSINT ----
+        st.markdown("---")
+        gh_sub_df = project_manager.load_scan_results('github_subdomains', target_domain)
+        if isinstance(gh_sub_df, pd.DataFrame) and not gh_sub_df.empty:
+            with st.expander(f"🐙 GitHub Subdomain OSINT ({len(gh_sub_df)})"):
+                st.dataframe(gh_sub_df, use_container_width=True)
+        with st.expander("🐙 Run GitHub Subdomain OSINT"):
+            st.caption("Queries the public GitHub search API (repo/commit metadata) for hostnames of this apex. "
+                       "No token needed; code search requires GITHUB_TOKEN.")
+            if st.button("🐙 Run", key="github_subdomains_run"):
+                with st.spinner("Querying GitHub search API..."):
+                    try:
+                        res = github_subdomains_scanner.scan_sync(target_domain)
+                        subs = res.get('subdomains', [])
+                        new_gh_df = pd.DataFrame({'Subdomain': subs, 'Source': ['GitHub'] * len(subs)}) \
+                            if subs else pd.DataFrame(columns=['Subdomain', 'Source'])
+                        if not new_gh_df.empty:
+                            project_manager.save_scan_results('github_subdomains', target_domain, new_gh_df)
+                            st.success(f"Found {len(subs)} GitHub-derived subdomains ({res.get('sources')})")
+                            st.dataframe(new_gh_df, use_container_width=True)
+                        else:
+                            st.info("No subdomains found via GitHub metadata.")
+                    except Exception as e:
+                        st.error(f"GitHub subdomain OSINT failed: {e}")
+
+        st.markdown("---")
+        st.subheader("🟢 Manual Live Host Probe")
         resolved_df = project_manager.load_scan_results('resolved_subdomains', target_domain)
+        candidates = []
         if isinstance(resolved_df, pd.DataFrame) and not resolved_df.empty:
-            with st.spinner("Checking..."):
-                progress = st.progress(0.0)
-                takeover_df = subdomain_scanner.run_subdomain_takeover_scan(
-                    resolved_df, progress_callback=lambda p, m: progress.progress(p, m)
-                )
-                if not takeover_df.empty:
-                    st.success(f"Found {len(takeover_df)} potential takeovers!")
-                    st.dataframe(takeover_df, use_container_width=True)
-                    project_manager.save_scan_results('subdomain_takeovers', target_domain, takeover_df)
-                else:
-                    st.info("No takeovers detected.")
-        else:
-            st.warning("Run subdomain scan first.")
+            if 'Subdomain' in resolved_df.columns:
+                candidates = resolved_df['Subdomain'].dropna().astype(str).tolist()
+            elif 'hostname' in resolved_df.columns:
+                candidates = resolved_df['hostname'].dropna().astype(str).tolist()
+            else:
+                candidates = resolved_df.iloc[:, 0].dropna().astype(str).tolist()
+        last_probe = ""
+        try:
+            lh_file = project_manager.get_current_project_path() / target_domain.replace('.', '_') / 'live_hosts_results.json'
+            if lh_file.exists():
+                last_probe = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(lh_file.stat().st_mtime))
+        except OSError:
+            pass
+        st.caption(f"Re-runs httpx on the **saved** resolved subdomains only — {len(candidates)} host(s) "
+                   f"from `resolved_subdomains`." + (f" Last probe: **{last_probe}**." if last_probe else ""))
+        mp1, mp2 = st.columns([1, 1])
+        with mp1:
+            manual_ports = st.text_input("Ports (comma-separated, default 443):", "", key="manual_probe_ports",
+                                         help="Leave empty for 443 only. Add e.g. 80,8080 to probe more.")
+        with mp2:
+            if st.button("🟢 Probe Live Hosts", key="manual_probe_run", type="primary",
+                         disabled=not candidates):
+                with st.spinner("Probing..."):
+                    progress_bar = st.progress(0.0, text="Starting...")
+                    status_ph = st.empty()
+                    import time as _t
+                    _started = _t.time()
+                    _log = []
 
-    takeover_df = project_manager.load_scan_results('subdomain_takeovers', target_domain)
-    if isinstance(takeover_df, pd.DataFrame) and not takeover_df.empty:
-        st.markdown("**Stored Takeover Findings**")
-        st.dataframe(takeover_df, use_container_width=True)
+                    def _probe_cb(p, m):
+                        status_ph.caption(f"🟢 RUNNING — {m} · {_t.time() - _started:.0f}s elapsed")
+                        progress_bar.progress(p, text=m)
+                        if m and m not in _log:
+                            _log.append(m)
 
-    # ---- ASN & DNS OSINT ----
-    st.markdown("---")
-    asn_df = project_manager.load_scan_results('asn_osint', target_domain)
-    if isinstance(asn_df, pd.DataFrame) and not asn_df.empty:
-        with st.expander(f"🛰️ ASN & DNS OSINT ({len(asn_df)})"):
-            st.dataframe(asn_df, use_container_width=True)
-    with st.expander("🛰️ Run ASN & DNS OSINT"):
-        st.caption("Keyless passive OSINT: BGPView ASN/prefix mapping, Hackertarget reverse lookups and "
-                   "DoH SPF/DMARC/DKIM/MX queries — finds origin IPs and infrastructure behind CDNs.")
-        if st.button("🛰️ Run", key="asn_osint_run"):
-            with st.spinner("Querying BGPView / DoH / reverse lookups..."):
-                try:
-                    res = asn_osint_scanner.scan_sync(target_domain)
-                    rows = []
-                    for a in res.get('asns', []):
-                        rows.append({'Type': 'ASN', 'Value': a.get('asn', ''), 'Detail': a.get('org', '')})
-                    for ip in res.get('origin_ips', []):
-                        rows.append({'Type': 'Origin IP', 'Value': ip, 'Detail': 'apex A record'})
-                    for rng in res.get('ipv4_ranges', []):
-                        rows.append({'Type': 'IPv4 Range', 'Value': rng, 'Detail': 'ASN prefix'})
-                    for rng in res.get('ipv6_ranges', []):
-                        rows.append({'Type': 'IPv6 Range', 'Value': rng, 'Detail': 'ASN prefix'})
-                    spf = res.get('spf', {})
-                    if spf.get('record'):
-                        rows.append({'Type': 'SPF', 'Value': spf['record'], 'Detail': f"all={spf.get('all', '')}"})
-                    for inc in spf.get('include', []):
-                        rows.append({'Type': 'SPF Include', 'Value': inc, 'Detail': ''})
-                    for h in res.get('mx_hosts', []):
-                        rows.append({'Type': 'MX Host', 'Value': h, 'Detail': ''})
-                    dmarc = res.get('dmarc', {})
-                    if dmarc.get('record'):
-                        rows.append({'Type': 'DMARC', 'Value': dmarc['record'],
-                                     'Detail': f"p={dmarc.get('p', '')}"})
-                    for dk in res.get('dkim', []):
-                        rows.append({'Type': 'DKIM', 'Value': dk.get('selector', ''),
-                                     'Detail': (dk.get('record') or '')[:120]})
-                    new_asn_df = pd.DataFrame(rows)
-                    if not new_asn_df.empty:
-                        project_manager.save_scan_results('asn_osint', target_domain, new_asn_df)
-                        st.success(f"ASN/DNS OSINT complete — {len(new_asn_df)} records ({res.get('totals', {})})")
-                        st.dataframe(new_asn_df, use_container_width=True)
-                    else:
-                        st.info("No ASN/DNS OSINT data returned.")
-                except Exception as e:
-                    st.error(f"ASN & DNS OSINT failed: {e}")
+                    try:
+                        extra = [p.strip() for p in manual_ports.split(',') if p.strip().isdigit()]
+                        http_results = subdomain_scanner.probe_live_hosts_chunked(
+                            candidates, extra_ports=extra or None,
+                            chunk_size=150, concurrency=25, rate_limit=150,
+                            progress_callback=_probe_cb)
+                        if http_results:
+                            project_manager.save_scan_results('live_hosts', target_domain, pd.DataFrame(http_results))
+                            status_ph.caption(f"✅ DONE — {len(http_results)} live hosts in "
+                                              f"{_t.time() - _started:.0f}s.")
+                            st.success(f"✅ {len(http_results)} live hosts saved to `live_hosts`.")
+                            st.dataframe(pd.DataFrame(http_results), use_container_width=True)
+                        else:
+                            status_ph.caption(f"❌ DONE — 0 live hosts in {_t.time() - _started:.0f}s.")
+                            st.warning("No live hosts found on the saved subdomains — "
+                                       "check connectivity or add ports (e.g. 80,8080).")
+                        if _log:
+                            with st.expander("🩺 Probe log"):
+                                for line in _log:
+                                    st.caption(line)
+                    except Exception as e:
+                        status_ph.caption(f"❌ FAILED — {_t.time() - _started:.0f}s.")
+                        st.error(f"Manual probe failed: {e}")
+            else:
+                st.caption("No saved `resolved_subdomains` yet — run the subdomain scan (or Single URL mode) first.")
 
-    # ---- GitHub Subdomain OSINT ----
-    st.markdown("---")
-    gh_sub_df = project_manager.load_scan_results('github_subdomains', target_domain)
-    if isinstance(gh_sub_df, pd.DataFrame) and not gh_sub_df.empty:
-        with st.expander(f"🐙 GitHub Subdomain OSINT ({len(gh_sub_df)})"):
-            st.dataframe(gh_sub_df, use_container_width=True)
-    with st.expander("🐙 Run GitHub Subdomain OSINT"):
-        st.caption("Queries the public GitHub search API (repo/commit metadata) for hostnames of this apex. "
-                   "No token needed; code search requires GITHUB_TOKEN.")
-        if st.button("🐙 Run", key="github_subdomains_run"):
-            with st.spinner("Querying GitHub search API..."):
-                try:
-                    res = github_subdomains_scanner.scan_sync(target_domain)
-                    subs = res.get('subdomains', [])
-                    new_gh_df = pd.DataFrame({'Subdomain': subs, 'Source': ['GitHub'] * len(subs)}) \
-                        if subs else pd.DataFrame(columns=['Subdomain', 'Source'])
-                    if not new_gh_df.empty:
-                        project_manager.save_scan_results('github_subdomains', target_domain, new_gh_df)
-                        st.success(f"Found {len(subs)} GitHub-derived subdomains ({res.get('sources')})")
-                        st.dataframe(new_gh_df, use_container_width=True)
-                    else:
-                        st.info("No subdomains found via GitHub metadata.")
-                except Exception as e:
-                    st.error(f"GitHub subdomain OSINT failed: {e}")
-
-# =====================================================================
+    # =====================================================================
 # TAB 2: Port & Service Scan
 # =====================================================================
 with tab2:
@@ -500,6 +648,8 @@ with tab2:
             st.error("Enter a target.")
         elif not (validate_domain(port_target) or validate_ip(port_target)):
             st.error("Invalid target.")
+        elif not project_manager.filter_targets_by_scope([port_target]):
+            st.error(f"🚫 {port_target} is out of scope for this project.")
         else:
             with st.spinner(f"Running {tool}..."):
                 progress = st.progress(0.0)
@@ -592,6 +742,7 @@ with tab3:
                     total_endpoints = len(results.get('js_discovered_endpoints', pd.DataFrame()))
                     critical = len(results.get('js_priority_endpoints', pd.DataFrame()))
                     secrets = len(results.get('js_sensitive_data_findings', pd.DataFrame()))
+                    api_keys = len(results.get('js_api_keys', pd.DataFrame()))
                     frameworks = len(results.get('js_frameworks', pd.DataFrame()))
                     proto = len(results.get('js_prototype_pollution', pd.DataFrame()))
                     clobber = len(results.get('js_dom_clobbering', pd.DataFrame()))
@@ -601,7 +752,7 @@ with tab3:
 
                     st.success(
                         f"JS v3.0 complete! 🎯 {total_endpoints} endpoints | "
-                        f"🔴 {critical} critical | 🔑 {secrets} secrets | "
+                        f"🔴 {critical} critical | 🔑 {secrets} secrets | 🔐 {api_keys} API keys | "
                         f"📦 {frameworks} frameworks | ⚠️ {proto} proto vectors | "
                         f"🌊 {clobber} clobbering | 📨 {postmsg} postMessage | "
                         f"☠️ {dangerous} dangerous | 🔗 {jsonp} JSONP"
@@ -615,9 +766,10 @@ with tab3:
 
     # ---- RESULTS: sub-tabbed so no single section dominates the page ----
     st.markdown("---")
-    js_sub1, js_sub2, js_sub3, js_sub4, js_sub5, js_sub6, js_sub7, js_sub8, js_sub9 = st.tabs([
+    js_sub1, js_sub2, js_sub3, js_sub4, js_sub5, js_sub6, js_sub7, js_sub8, js_sub9, js_sub10 = st.tabs([
         "📊 Overview", "🔑 Secrets & Patterns", "⚠️ Client-Side Vectors", "📂 Endpoints",
-        "🧪 PP Validation", "🖥️ DOM XSS", "🌐 CORS", "↩️ Open Redirect", "📡 SSRF"
+        "🧪 PP Validation", "🖥️ DOM XSS", "🌐 CORS", "↩️ Open Redirect", "📡 SSRF",
+        "🔐 API Keys"
     ])
 
     # Preload all stored frames once. Individual js_* keys are written by the
@@ -1006,6 +1158,113 @@ with tab3:
                             except Exception as e:
                                 st.error(f"{_label} validation failed: {e}")
 
+    # ================= API KEYS (precise keyhacks corpus) =================
+    with js_sub10:
+        st.caption("Precise API-key detection against the **streaak/keyhacks** corpus "
+                   "(105 key-format regexes across 89 services). Only known key formats "
+                   "for named services are flagged — no generic entropy guessing.")
+
+        api_df = _load_js('js_api_keys', 'js_api_keys')
+        ak_found = 0
+        if _has(api_df):
+            ak_found = len(api_df)
+            ak_c1, ak_c2, ak_c3, ak_c4 = st.columns(4)
+            ak_c1.metric("🔐 API Keys", ak_found)
+            critical_ak = int((api_df['severity'].astype(str) == 'CRITICAL').sum()) if 'severity' in api_df else 0
+            ak_c2.metric("🚨 Critical", critical_ak)
+            ak_c3.metric("🏷️ Services", api_df['service'].nunique() if 'service' in api_df else 0)
+            ak_c4.metric("📄 Sources", api_df['source'].nunique() if 'source' in api_df else 0)
+
+            if 'service' in api_df.columns:
+                svc_counts = api_df['service'].value_counts()
+                if len(svc_counts) > 8:
+                    svc_counts = svc_counts.head(8)
+                st.bar_chart(svc_counts)
+
+            ak_view = api_df.copy()
+            if 'value' in ak_view.columns:
+                ak_view['value'] = ak_view['value'].apply(
+                    lambda x: str(x)[:8] + '...' + str(x)[-4:] if len(str(x)) > 12 else x)
+            if 'verification' in ak_view.columns:
+                ak_view['verification'] = ak_view['verification'].apply(
+                    lambda x: str(x)[:120] + ('...' if len(str(x)) > 120 else ''))
+            st.dataframe(ak_view, use_container_width=True)
+            st.download_button("📥 Download API Keys", api_df.to_csv(index=False),
+                               f"{target_domain}_api_keys.csv", "text/csv", key="dl_js_api_keys")
+
+            if 'verification' in api_df.columns:
+                with st.expander("🔎 Verification commands for the matches above"):
+                    seen_cmds = set()
+                    for _, row in api_df.iterrows():
+                        cmd = str(row.get('verification', '')).strip()
+                        if not cmd or cmd in seen_cmds:
+                            continue
+                        seen_cmds.add(cmd)
+                        st.markdown(f"**{row.get('service', '')}** / `{row.get('key_name', '')}`")
+                        st.code(cmd, language='bash')
+
+        # ---- standalone run: re-scan the cached JS bodies ----
+        with st.expander("🚀 Run API Key Scan"):
+            js_files_df = project_manager.load_scan_results('js_files', target_domain)
+            ak_cached = []
+            ak_urls = []
+            if isinstance(js_files_df, pd.DataFrame) and not js_files_df.empty:
+                if 'content' in js_files_df.columns:
+                    ak_cached = [(r.get('url', ''), r.get('content', ''))
+                                 for _, r in js_files_df.iterrows()
+                                 if r.get('url') and isinstance(r.get('content'), str) and r.get('content')]
+                if not ak_cached and 'url' in js_files_df.columns:
+                    ak_urls = [u for u in js_files_df['url'].tolist() if is_valid_url(u)]
+            if not ak_urls:
+                ak_urls = [u for u in urls if is_valid_url(u)]
+            if ak_cached:
+                st.caption(f"⚡ {len(ak_cached)} JS file(s) **cached from JS Analysis** — scanning "
+                           "content in place, no re-fetch. Results are saved as `js_api_keys`.")
+            else:
+                st.caption(f"{len(ak_urls)} JS URL(s) — no cached bodies found (re-run JS Analysis to "
+                           "cache them), so these will be fetched live.")
+            if st.button("🔐 Run API Key Scan", key="run_api_key_scan"):
+                if not ak_cached and not ak_urls:
+                    st.info("No JS files to scan. Run JS Analysis first.")
+                else:
+                    with st.spinner("Scanning JS for API keys..."):
+                        ak_progress = st.progress(0.0, text="Starting...")
+                        try:
+                            if ak_cached:
+                                scanned = []
+                                for idx, (u, body) in enumerate(ak_cached):
+                                    scanned.extend(api_key_scanner.scan_js_content(body, u))
+                                    ak_progress.progress((idx + 1) / len(ak_cached),
+                                                         text=f"Scanned {idx + 1}/{len(ak_cached)} cached files")
+                                errors = []
+                            else:
+                                ak_res = api_key_scanner.scan_urls(
+                                    ak_urls,
+                                    progress_callback=lambda p, m: ak_progress.progress(
+                                        min(max(p, 0.0), 1.0), text=m))
+                                scanned = ak_res.get('scanned', [])
+                                errors = ak_res.get('errors', [])
+                            if scanned:
+                                ak_new_df = pd.DataFrame(scanned)
+                                project_manager.save_scan_results('js_api_keys', target_domain, ak_new_df)
+                                n_crit = int((ak_new_df['severity'].astype(str) == 'CRITICAL').sum())
+                                st.error(f"🔑 {len(scanned)} API key(s) found — {n_crit} CRITICAL. Verify manually!")
+                                st.dataframe(ak_new_df, use_container_width=True)
+                            else:
+                                n_src = len(ak_cached) if ak_cached else len(ak_urls)
+                                st.info(f"No API keys found across {n_src} JS file(s).")
+                            if 'errors' in dir() and errors:
+                                with st.expander(f"⚠️ {len(errors)} fetch error(s)"):
+                                    st.code('\n'.join(errors[:20]))
+                        except Exception as e:
+                            st.error(f"API key scan failed: {e}")
+                            import traceback
+                            st.code(traceback.format_exc())
+
+        if not _has(api_df) and 'run_api_key_scan' not in st.session_state:
+            st.info("No API-key findings yet — run **JS Analysis** (now includes API-key scanning) "
+                    "or use the standalone scan above.")
+
 # =====================================================================
 # TAB 4: Vulnerability Detection (GF + kxss)
 # =====================================================================
@@ -1027,6 +1286,7 @@ with tab4:
     if isinstance(hist_pm_df, pd.DataFrame) and 'URL' in hist_pm_df.columns:
         urls.extend(hist_pm_df['URL'].tolist())
     urls = list(set([u for u in urls if is_valid_url(u)]))
+    urls = project_manager.filter_targets_by_scope(urls)
     if not urls:
         urls = [f"https://{target_domain}", f"http://{target_domain}"]
 
@@ -1112,6 +1372,7 @@ with tab4:
             xss_candidates.extend([u.strip() for u in manual_urls.split('\n') if is_valid_url(u.strip())])
 
         xss_candidates = list(dict.fromkeys(xss_candidates))
+        xss_candidates = project_manager.filter_targets_by_scope(xss_candidates)
 
         if xss_candidates:
             st.info(f"Ready to probe {len(xss_candidates)} URLs with kxss")
@@ -1212,6 +1473,7 @@ with tab4:
         if not cfg_urls:
             manual_cfg = st.text_input("Comma-separated URLs:", key="config_sensitive_urls")
             cfg_urls = [u.strip() for u in manual_cfg.split(",") if is_valid_url(u.strip())]
+        cfg_urls = project_manager.filter_targets_by_scope(cfg_urls)
         st.caption(f"{len(cfg_urls)} live host URL(s) queued.")
         if st.button("⚙️ Run", key="config_sensitive_run"):
             if not cfg_urls:
@@ -1343,6 +1605,7 @@ with tab6:
     if isinstance(js_endpoints, pd.DataFrame) and 'endpoint' in js_endpoints.columns:
         urls.extend(js_endpoints['endpoint'].tolist())
     urls = sorted(set([u for u in urls if is_valid_url(u)]))
+    urls = project_manager.filter_targets_by_scope(urls)
     if not urls:
         urls = [f"https://{target_domain}", f"http://{target_domain}"]
 
@@ -1457,6 +1720,7 @@ with tab6:
     fuzz_urls = list(urls)
     if manual_pm_urls.strip():
         fuzz_urls.extend(u.strip() for u in manual_pm_urls.splitlines() if is_valid_url(u.strip()))
+    fuzz_urls = project_manager.filter_targets_by_scope(fuzz_urls)
     fuzz_urls = list(dict.fromkeys(fuzz_urls))[:max_urls]
 
     st.info(f"Ready to fuzz {len(fuzz_urls)} URLs (of {len(urls)} collected).")
@@ -1588,6 +1852,7 @@ with tab7:
     urls = []
     if isinstance(live_df, pd.DataFrame) and 'URL' in live_df.columns:
         urls = [u for u in live_df['URL'].tolist() if is_valid_url(u)]
+    urls = project_manager.filter_targets_by_scope(urls)
     if not urls:
         urls = [f"https://{target_domain}", f"http://{target_domain}"]
 
@@ -1645,8 +1910,23 @@ with tab8:
             base = f"{parsed.scheme}://{parsed.netloc}"
             if base not in urls:
                 urls.append(base)
+    # feed known GraphQL endpoints from JS analysis straight in
+    for scan_type, col in (('js_graphql_endpoints', 'endpoint'),
+                           ('js_discovered_endpoints', 'endpoint')):
+        df = project_manager.load_scan_results(scan_type, target_domain)
+        if isinstance(df, pd.DataFrame) and col in df.columns:
+            for u in df[col].dropna().astype(str):
+                low = u.lower()
+                if 'graphql' in low or 'gql' in low:
+                    urls.append(u)
+    urls = list(dict.fromkeys(urls))
+    urls = project_manager.filter_targets_by_scope(urls)
     if not urls:
         urls = [f"https://{target_domain}", f"http://{target_domain}"]
+    st.caption(f"Probing {len(urls)} candidate base(s) — introspection, security probes, and "
+               "clairvoyance schema reconstruction (introspection-disabled targets). "
+               "Results persist under graphql_endpoints / graphql_schemas / "
+               "graphql_clairvoyance / graphql_security.")
 
     if st.button("🧬 Run GraphQL Scan", key="run_graphql"):
         with st.spinner("Scanning..."):
@@ -1657,6 +1937,31 @@ with tab8:
                     st.success(f"Found {len(results['endpoints'])} GraphQL endpoints.")
                     st.dataframe(pd.DataFrame({'Endpoint': results['endpoints']}), use_container_width=True)
                     project_manager.save_scan_results('graphql_endpoints', target_domain, pd.DataFrame({'Endpoint': results['endpoints']}))
+
+                if results['schemas']:
+                    rows = [{'endpoint': ep, 'schema': json.dumps(s)} for ep, s in results['schemas'].items()]
+                    project_manager.save_scan_results('graphql_schemas', target_domain, pd.DataFrame(rows))
+
+                if results['clairvoyance']:
+                    rows = []
+                    for ep, recon in results['clairvoyance'].items():
+                        types = {n: {'fields': list(info.get('fields', []))}
+                                 for n, info in recon.get('types', {}).items()}
+                        rows.append({
+                            'endpoint': ep, 'viable': bool(recon.get('viable')),
+                            'root_query': recon.get('root_query', ''),
+                            'root_mutation': recon.get('root_mutation', ''),
+                            'requests': int(recon.get('requests_made', 0)),
+                            'note': recon.get('note', ''),
+                            'type_count': len(recon.get('types', {})),
+                            'types': json.dumps(types),
+                        })
+                    project_manager.save_scan_results('graphql_clairvoyance', target_domain, pd.DataFrame(rows))
+
+                if results['security']:
+                    rows = [{'endpoint': ep, 'notes': '\n'.join(sec.get('notes', [])),
+                             'details': json.dumps(sec)} for ep, sec in results['security'].items()]
+                    project_manager.save_scan_results('graphql_security', target_domain, pd.DataFrame(rows))
 
                 if results['analysis']:
                     for ep, analysis in results['analysis'].items():
@@ -1677,15 +1982,127 @@ with tab8:
                                 st.error("🚨 Misconfigurations")
                                 for note in security['notes']:
                                     st.markdown(f"- {note}")
+
+                if results['clairvoyance']:
+                    for ep, recon in results['clairvoyance'].items():
+                        with st.expander(f"🔮 Clairvoyance (schema reconstruction): {ep}"):
+                            st.markdown(f"**Viable**: {recon.get('viable')} · "
+                                        f"**Root query**: `{recon.get('root_query')}` · "
+                                        f"**Root mutation**: `{recon.get('root_mutation')}` · "
+                                        f"**Requests**: {recon.get('requests_made')}")
+                            st.markdown(f"*{recon.get('note', '')}*")
+                            if recon.get('types'):
+                                with st.expander(f"{len(recon['types'])} reconstructed type(s)"):
+                                    for tname, info in recon['types'].items():
+                                        fields = ', '.join(info.get('fields', [])[:25])
+                                        st.markdown(f"- **{tname}**: `{fields}`")
             except Exception as e:
                 st.error(f"GraphQL scan failed: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
     graphql_stored = project_manager.load_scan_results('graphql_endpoints', target_domain)
     if isinstance(graphql_stored, pd.DataFrame) and not graphql_stored.empty:
         with st.expander(f"Stored GraphQL Endpoints ({len(graphql_stored)})"):
             st.dataframe(graphql_stored, use_container_width=True)
 
+    gql_sec_stored = project_manager.load_scan_results('graphql_security', target_domain)
+    if isinstance(gql_sec_stored, pd.DataFrame) and not gql_sec_stored.empty:
+        with st.expander(f"⚠️ Stored GraphQL Security Findings ({len(gql_sec_stored)})"):
+            for _, r in gql_sec_stored.iterrows():
+                notes = str(r.get('notes', '')).strip()
+                if notes:
+                    st.markdown(f"**{r.get('endpoint', '')}**")
+                    for line in notes.splitlines():
+                        st.markdown(f"- {line}")
+
+    gql_clair_stored = project_manager.load_scan_results('graphql_clairvoyance', target_domain)
+    if isinstance(gql_clair_stored, pd.DataFrame) and not gql_clair_stored.empty:
+        with st.expander(f"🔮 Stored Clairvoyance Results ({len(gql_clair_stored)})"):
+            for _, r in gql_clair_stored.iterrows():
+                st.markdown(f"**{r.get('endpoint', '')}** — viable={r.get('viable')} "
+                            f"root_q=`{r.get('root_query', '')}` root_m=`{r.get('root_mutation', '')}` "
+                            f"({r.get('requests', 0)} req, {r.get('type_count', 0)} types)")
+                note = str(r.get('note', '')).strip()
+                if note:
+                    st.caption(note)
+                types_raw = r.get('types', '')
+                if isinstance(types_raw, str) and types_raw and types_raw != '{}':
+                    try:
+                        types = json.loads(types_raw)
+                        with st.expander(f"{len(types)} reconstructed type(s)"):
+                            for tname, info in types.items():
+                                fields = ', '.join(info.get('fields', [])[:25])
+                                st.markdown(f"- **{tname}**: `{fields}`")
+                    except Exception:
+                        pass
+
+    gql_schema_stored = project_manager.load_scan_results('graphql_schemas', target_domain)
+    if isinstance(gql_schema_stored, pd.DataFrame) and not gql_schema_stored.empty:
+        with st.expander(f"📦 Stored GraphQL Schemas ({len(gql_schema_stored)})"):
+            for _, r in gql_schema_stored.iterrows():
+                st.markdown(f"- `{r.get('endpoint', '')}` ({len(str(r.get('schema', '')))} bytes)")
+
     # IDOR
+    st.markdown("---")
+    st.markdown("### 🚦 REST Validation Battery")
+    st.caption("Proves injection on high-value REST endpoints: baseline request vs. "
+               "single-shot NoSQL/SQL probes on login/auth/search/CRUD endpoints "
+               "(GET only + one POST attempt per login form). Flags server errors, "
+               "DB-error signatures and auth-bypass status flips. Results saved as "
+               "`live_validation_results`.")
+    rv_endpoints = project_manager.load_scan_results('js_discovered_endpoints', target_domain)
+    rv_rows = []
+    if isinstance(rv_endpoints, pd.DataFrame) and not rv_endpoints.empty:
+        rv_rows = rv_endpoints.to_dict('records')
+    rv_manual = st.text_area("Extra URLs (one per line, optional):", height=60,
+                             key="rv_manual_urls")
+    if rv_manual.strip():
+        for u in rv_manual.splitlines():
+            u = u.strip()
+            if is_valid_url(u):
+                rv_rows.append({'endpoint': u, 'method': 'GET'})
+    rv_filtered = set(project_manager.filter_targets_by_scope(
+        [r.get('endpoint', '') for r in rv_rows]))
+    rv_rows = [r for r in rv_rows if r.get('endpoint', '') in rv_filtered]
+    st.caption(f"{len(rv_rows)} candidate endpoint(s) on this target queued.")
+    if st.button("🚦 Run REST Validation", key="run_rest_validation"):
+        if not rv_rows:
+            st.info("No endpoints — run JS Analysis first.")
+        else:
+            with st.spinner("Validating REST endpoints..."):
+                rv_progress = st.progress(0.0, text="Starting...")
+                try:
+                    rv_target_host = ''
+                    if isinstance(target_domain, str) and target_domain:
+                        rv_target_host = target_domain.lower().rstrip('.')
+                    findings = live_rest_validator.scan(
+                        rv_rows, target_host=rv_target_host,
+                        progress_callback=lambda p, m: rv_progress.progress(
+                            min(max(p, 0.0), 1.0), text=m))
+                    if findings:
+                        rv_df = pd.DataFrame(findings)
+                        project_manager.save_scan_results('live_validation_results',
+                                                          target_domain, rv_df)
+                        n_high = int((rv_df['severity'].astype(str) == 'HIGH').sum())
+                        st.error(f"🚨 {len(findings)} injection candidate(s) — {n_high} HIGH. "
+                                 "Verify manually before reporting.")
+                        st.dataframe(rv_df, use_container_width=True)
+                        st.download_button("📥 Download", rv_df.to_csv(index=False),
+                                           f"{target_domain}_live_validation.csv",
+                                           "text/csv", key="dl_rv")
+                    else:
+                        st.success(f"No injection signals across {len(rv_rows)} endpoint(s).")
+                except Exception as e:
+                    st.error(f"REST validation failed: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+    rv_stored = project_manager.load_scan_results('live_validation_results', target_domain)
+    if isinstance(rv_stored, pd.DataFrame) and not rv_stored.empty:
+        with st.expander(f"Stored REST Validation Results ({len(rv_stored)})"):
+            st.dataframe(rv_stored, use_container_width=True)
+
     st.markdown("---")
     st.markdown("### 🔐 IDOR / BOLA Scanner")
     urls = []
@@ -1697,6 +2114,7 @@ with tab8:
             elif 'endpoint' in df.columns:
                 urls.extend(df['endpoint'].tolist())
     urls = list(set([u for u in urls if is_valid_url(u)]))
+    urls = project_manager.filter_targets_by_scope(urls)
 
     if urls:
         st.info(f"Testing {len(urls)} URLs for IDOR.")

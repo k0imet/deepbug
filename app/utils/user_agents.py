@@ -1,10 +1,29 @@
 # app/utils/user_agents.py
 
 import random
+import json
+import os
+from pathlib import Path
 
-# Program identification tag mandated by the GRW Trading FZE bounty program
-# (YesWeHack). Appended to every outgoing User-Agent so traffic is attributable.
-PROGRAM_UA_TAG = ' -BugBounty-bitoasis '
+
+def _load_ua_tag() -> str:
+    """Program identification tag appended to outgoing User-Agents.
+
+    Defaults to empty. Some bug bounty programs mandate an attribution tag
+    (e.g. '-ProgramName-account') so traffic is attributable — set
+    `tools.user_agent_tag` in config.json when a program requires it.
+    """
+    try:
+        config_path = Path(__file__).resolve().parents[2] / 'app' / 'modules' / 'config.json'
+        if config_path.is_file():
+            cfg = json.loads(config_path.read_text())
+            return str(cfg.get('tools', {}).get('user_agent_tag', '') or '')
+    except Exception:
+        pass
+    return os.environ.get('DEEPBUG_UA_TAG', '')
+
+
+PROGRAM_UA_TAG = _load_ua_tag()
 
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -15,8 +34,10 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0',
 ]
 
+
 def get_user_agent() -> str:
     return random.choice(USER_AGENTS) + PROGRAM_UA_TAG
+
 
 def detect_waf_block(resp) -> bool:
     """
