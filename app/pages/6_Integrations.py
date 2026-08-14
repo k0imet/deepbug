@@ -505,3 +505,82 @@ st.markdown("---")
 st.caption("Licensing: Burp Suite Professional EULA prohibits running Pro in "
            "CI/CD pipelines — use these connectors from your workstation. "
            "Caido free tier supports all of this.")
+
+# =====================================================================
+# 🔐 Auth Sessions - one authenticated context per target, injected into
+# every validator (REST battery, IDOR, GraphQL).
+# =====================================================================
+st.markdown("---")
+st.subheader("🔐 Auth Sessions")
+st.caption("Capture ONE login per target (JSON / form / OAuth2 / manual paste) "
+           "and every validator replays it: authenticated REST probing, IDOR "
+           "with real sessions, gated GraphQL. Sessions are stored under "
+           "`projects/<project>/.auth/` (gitignored).")
+with st.expander("Manage sessions", expanded=False):
+    from app.modules.integrations.auth_session import AuthSession, AuthError as _AuthError
+    if not target_list:
+        st.info("Add a target in Projects first.")
+    else:
+        as_target = st.selectbox("Target:", target_list, key="authsess_target")
+        as_flow = st.selectbox("Flow:",
+                               ["json_login", "form_login", "oauth2", "manual"],
+                               key="authsess_flow",
+                               help="json_login: POST JSON, token from body/header. "
+                                    "form_login: GET page, harvest CSRF, POST form. "
+                                    "oauth2: grant_type=password. manual: paste.")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            as_user = st.text_input("Username/email:", key="authsess_user")
+            as_user_field = st.text_input("User field name:", "email", key="authsess_userf")
+        with c2:
+            as_pass = st.text_input("Password:", type="password", key="authsess_pass")
+            as_pass_field = st.text_input("Pass field name:", "password", key="authsess_passf")
+        with c3:
+            as_base = st.text_input("Base URL:", value=f"https://{as_target}", key="authsess_base")
+            as_endpoint = st.text_input("Login path (or OAuth token path):", "/rest/user/login",
+                                        key="authsess_path")
+        as_extra = st.text_input("Extra fields (JSON, optional):", key="authsess_extra")
+        as_client = st.text_input("OAuth client_id (oauth2 only):", key="authsess_cid")
+        as_secret = st.text_input("OAuth client_secret (oauth2 only):", type="password",
+                                  key="authsess_csec")
+        as_bearer = st.text_input("Manual bearer token:", type="password", key="authsess_bearer")
+        as_cookie = st.text_input("Manual Cookie header:", key="authsess_cookie")
+
+        if st.button("🔑 Establish session", key="authsess_run"):
+            try:
+                sess = AuthSession(target=as_target, base_url=as_base.rstrip('/'))
+                if as_flow == 'json_login':
+                    extra = json.loads(as_extra) if as_extra.strip() else None
+                    sess.json_login(as_endpoint, as_user_field, as_pass_field,
+                                    as_user, as_pass, extra_fields=extra)
+                elif as_flow == 'form_login':
+                    sess.form_login(as_endpoint, as_user_field, as_pass_field,
+                                    as_user, as_pass)
+                elif as_flow == 'oauth2':
+                    sess.oauth2_password(as_endpoint, as_client, as_secret, as_user, as_pass)
+                elif as_flow == 'manual':
+                    sess.manual(bearer=as_bearer, cookie_header=as_cookie)
+                sess.save(project_manager.get_current_project_path())
+                ok = sess.verify()
+                st.success(f"Session established ({sess.flow})"
+                           + (f" · verify probe OK" if ok else " · verify probe failed"))
+            except _AuthError as e:
+                st.error(f"Auth failed: {e}")
+            except Exception as e:
+                st.error(f"Session error: {type(e).__name__}: {e}")
+
+        stored = AuthSession.load(project_manager.get_current_project_path(), as_target)
+        if stored is not None and stored.authenticated:
+            st.markdown(f"**Stored session** (`{stored.flow}`) — "
+                        f"bearer: {'yes' if stored.bearer else 'no'} · "
+                        f"cookies: {list(stored.cookies.keys())} · "
+                        f"refresh: {'yes' if stored.refresh_token else 'no'}")
+            vc1, vc2 = st.columns(2)
+            if vc1.button("✅ Verify stored", key="authsess_verify"):
+                st.success("Session valid." if stored.verify() else "Session INVALID.")
+            if vc2.button("🗑️ Delete stored", key="authsess_del"):
+                (project_manager.get_current_project_path() / '.auth' /
+                 f"{as_target.replace('.', '_').replace('/', '_')}.json").unlink(missing_ok=True)
+                st.rerun()
+        else:
+            st.caption("No stored session for this target yet.")
