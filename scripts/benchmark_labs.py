@@ -115,6 +115,17 @@ def bench_lab():
     record('lab prototype-pollution', any(r['Result'] == 'CONFIRMED' for r in pp), f"{len(pp)} row(s)")
     dx = DOMXSSValidator(CFG).validate_sync(['http://127.0.0.1:9876/domxss'])
     record('lab dom-xss', any(r['Result'] == 'CONFIRMED' for r in dx), f"{len(dx)} row(s)")
+    oob = os.environ.get('WEBHOOK_SITE_UUID', '')
+    if oob:
+        cfg_oob = dict(CFG)
+        cfg_oob['ssrf_validator'] = {'oob_uuid': oob}
+        cfg_oob['open_redirect_validator'] = {'oob_uuid': oob}
+        r2 = SSRFValidator(cfg_oob).validate_sync([rows[1]['endpoint']])
+        record('lab ssrf OOB (webhook.site)', any(r['Result'] == 'CONFIRMED' for r in r2), f"{len(r2)} row(s)")
+        r3 = OpenRedirectValidator(cfg_oob).validate_sync([rows[0]['endpoint']])
+        record('lab open-redirect OOB', any(r['Class'] == 'redirect-offsite' for r in r3), f"{len(r3)} row(s)")
+    else:
+        print("   (OOB checks skipped - set WEBHOOK_SITE_UUID to enable webhook.site proofs)")
 
 
 def main():

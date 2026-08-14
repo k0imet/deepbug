@@ -3,30 +3,33 @@ from app.utils.user_agents import PROGRAM_UA_TAG
 # SSRF confirmation for candidate URL-fetching parameters - the validation
 # layer on top of ssrf_scanner's heuristic findings.
 #
-# Honest scope note (grounded in the OOB-validation write-up in the corpus):
-# real CONFIRMED blind-SSRF proof needs a callback host we control; we do not
-# operate one, so this validator confirms only the verifiable-on-demand tier:
+# Confirmation tiers:
 #
+#   CONFIRMED (oob-callback) - an external OOB callback host (webhook.site by
+#                              default) records a request to our unique canary
+#                              URL: the app provably made a server-side request
+#                              to an attacker-chosen URL. The gold standard for
+#                              blind SSRF.
 #   PROBABLE  (url-reflection)  - our canary URL (unique host) is echoed back in
-#                                 the response body or headers; the app layering
-#                                 our value into a server-side request is evident.
-#   PROBABLE  (fetched-destination) - we requested a known, controlled-adjacent
-#                                 destination (example.com/robots.txt) and the
-#                                 server returned THAT destination's content
-#                                 (fingerprint match) instead of its own hub page:
-#                                 a server-side fetch of our URL is the only
-#                                 explanation consistent with the response.
+#                                 the response body or headers.
+#   PROBABLE  (fetched-destination) - the server returned a controlled
+#                                 destination's content (fingerprint match).
 #   INFO      (destination-banner) - response headers/HTML mention an unexpected
 #                                 upstream host -> worth a manual look.
 #
-# Destinations are always safe and benign (example.com robots / example.net).
-# 169.254.169.254 cloud-metadata probing is NEVER part of this validator.
+# Destinations are always safe and benign. 169.254.169.254 cloud-metadata
+# probing is NEVER part of this validator.
 #
 # Config (all optional):
 #   ssrf_validator.max_urls  -> cap candidate URLs (default 100)
 #   ssrf_validator.timeout   -> per-request budget (default 8)
 #   ssrf_validator.dest      -> fingerprint destination (default example.com
 #                               robots.txt; host==dest detection is generic)
+#   ssrf_validator.oob_uuid  -> webhook.site token UUID. When set, canaries
+#                               become https://webhook.site/{uuid}?v={value}
+#                               and the request log is polled after the probes
+#                               to upgrade findings to CONFIRMED on callback.
+#   ssrf_validator.oob_poll_wait -> seconds to wait before polling (default 6)
 
 import asyncio
 from typing import Dict, List, Optional, Callable
@@ -57,12 +60,42 @@ class SSRFValidator:
         self.last_errors: List[str] = []
         import random
         self.value = f"dbx{random.randint(100000, 999999)}"
+        self.oob_uuid = str(cfg.get('oob_uuid', '') or '').strip()
+        self.oob_poll_wait = float(cfg.get('oob_poll_wait', 6))
+        self.oob_base = f"https://webhook.site/{self.oob_uuid}" if self.oob_uuid else ""
+
+    # ------------------------------------------------------------------ OOB
+    async def _poll_oob(self, session: aiohttp.ClientSession) -> List[str]:
+        """Poll webhook.site for callbacks carrying our canary value.
+        Returns the list of matched callback URLs."""
+        if not self.oob_uuid:
+            return []
+        hits = []
+        try:
+            await asyncio.sleep(self.oob_poll_wait)
+            url = f"https://webhook.site/token/{self.oob_uuid}/requests"
+            async with session.get(url, timeout=15) as r:
+                if r.status != 200:
+                    return []
+                data = await r.json(content_type=None)
+            for req in (data or {}).get('data', []) or []:
+                hay = str(req.get('url', '')) + str(req.get('query', ''))
+                if self.value in hay:
+                    hits.append(str(req.get('url', ''))[:160])
+        except Exception as e:
+            logger.debug(f"OOB poll failed: {e}")
+        return hits
 
     def _variants(self, url: str) -> List[Optional[List[str]]]:
-        """[(param, sworn_url), ...] with our canary host as the requested target."""
+        """[(param, sworn_url), ...] with our canary as the requested target.
+        With an OOB configured, the canary is a webhook.site URL carrying our
+        unique value in the query - a callback is definitive blind-SSRF proof."""
         parsed = urlparse(url)
         pairs = parse_qsl(parsed.query, keep_blank_values=True)
-        canary = f"https://{self.value}.ssrf.deepbug.io/robots.txt"
+        if self.oob_base:
+            canary = f"{self.oob_base}?v={self.value}"
+        else:
+            canary = f"https://{self.value}.ssrf.deepbug.io/robots.txt"
         out = []
         for k, v in pairs:
             if k.lower() in _SSRF_PARAMS:
@@ -133,10 +166,21 @@ class SSRFValidator:
                 if progress_callback:
                     progress_callback((idx + 1) / total,
                                       f"[{idx + 1}/{total}] {url} -> {len([r for r in results if r['URL'].startswith(url)])} hit(s)")
+            # OOB: poll the callback host once and upgrade matching findings
+            if self.oob_uuid and results:
+                if progress_callback:
+                    progress_callback(0.97, "Polling OOB callback host (webhook.site)...")
+                callbacks = await self._poll_oob(session)
+                if callbacks:
+                    for row in results:
+                        if row.get('Result') in ('INFO', 'PROBABLE'):
+                            row.update(Result='CONFIRMED', Class='oob-callback',
+                                       Sink=f'callback received: {callbacks[0]}',
+                                       Note='blind SSRF: server-side request to attacker URL observed on OOB host')
         if progress_callback:
-            prob = len([r for r in results if r['Result'] == 'PROBABLE'])
-            progress_callback(1.0, f"Done: {prob} probable SSRF signals, "
-                                   f"{len(results) - prob} info (blind-SSRF confirm needs OOB host)")
+            prob = len([r for r in results if r['Result'] in ('PROBABLE', 'CONFIRMED')])
+            progress_callback(1.0, f"Done: {prob} probable/confirmed SSRF signals, "
+                                   f"{len([r for r in results if r['Result'] == 'CONFIRMED'])} OOB-confirmed")
         return results
 
     def validate_sync(self, urls: List[str],
