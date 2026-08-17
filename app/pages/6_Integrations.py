@@ -20,6 +20,15 @@ from app.utils.theme import inject_theme, app_header, get_palette
 
 CONFIG = load_config()
 
+# credential resolution: page field > config.json (integrations.*) > env var
+def _burp_cred(field: str) -> str:
+    import os as _os
+    return field or (CONFIG.get('integrations', {}).get('burp', {}).get('api_key') or '') or _os.environ.get('BURP_API_KEY', '')
+
+def _caido_cred(field: str) -> str:
+    import os as _os
+    return field or (CONFIG.get('integrations', {}).get('caido', {}).get('pat') or '') or _os.environ.get('CAIDO_PAT', '')
+
 inject_theme()
 app_header("🔌", "Integrations",
            "Bridge DeepBug with the tools you already use.")
@@ -114,7 +123,7 @@ def _health_result(res):
 
 def _scan_succeeded(status) -> bool:
     if isinstance(status, dict):
-        status = status.get('status', status.get('state', ''))
+        status = status.get('scan_status', status.get('status', status.get('state', '')))
     if not isinstance(status, str):
         status = str(status)
     return status.lower() in ('succeeded', 'success', 'complete', 'completed', 'done', 'finished')
@@ -167,7 +176,7 @@ with st.expander("Connection", expanded=True):
                                       "Falls back to the BURP_API_KEY environment "
                                       "variable if left empty.")
     if st.button("Test connection", key="intg_burp_test"):
-        client, err = _burp_client(burp_url, burp_key or CONFIG.get('burp_api_key') or "")
+        client, err = _burp_client(burp_url, _burp_cred(burp_key))
         if client is None:
             st.warning(err)
         else:
@@ -205,7 +214,7 @@ else:
             st.warning("No live hosts saved for this target yet. Run "
                        "Reconnaissance → Live Hosts first.")
         else:
-            client, err = _burp_client(burp_url, burp_key or CONFIG.get('burp_api_key') or "")
+            client, err = _burp_client(burp_url, _burp_cred(burp_key))
             if client is None:
                 st.warning(err)
             else:
@@ -223,14 +232,14 @@ else:
     if burp_task_id:
         st.caption(f"Active Burp task: `{burp_task_id}`")
         if st.button("Check scan status", key="intg_burp_poll"):
-            client, err = _burp_client(burp_url, burp_key or CONFIG.get('burp_api_key') or "")
+            client, err = _burp_client(burp_url, _burp_cred(burp_key))
             if client is None:
                 st.warning(err)
             else:
                 with st.spinner("Polling Burp..."):
                     try:
                         status = client.scan_status(burp_task_id)
-                        status_val = status.get('status', status.get('state', '')) if isinstance(status, dict) else status
+                        status_val = status.get('scan_status', status.get('status', status.get('state', ''))) if isinstance(status, dict) else status
                         st.caption(f"Status: `{status_val}`")
                         if _scan_succeeded(status):
                             results = client.scan_results(burp_task_id)
@@ -266,7 +275,7 @@ with c2:
 if burp_upload is not None and target_list:
     if st.button("Import Burp proxy history", key="intg_burp_import"):
         fmt = burp_upload.name.rsplit('.', 1)[-1].lower()
-        client, err = _burp_client(burp_url, burp_key or CONFIG.get('burp_api_key') or "")
+        client, err = _burp_client(burp_url, _burp_cred(burp_key))
         if client is None:
             st.warning(err)
         else:
@@ -327,7 +336,7 @@ with st.expander("Connection", expanded=True):
                                        "Falls back to the CAIDO_PAT environment "
                                        "variable if left empty.")
     if st.button("Test connection", key="intg_caido_test"):
-        client, err = _caido_client(caido_url, caido_pat or CONFIG.get('caido_pat') or "")
+        client, err = _caido_client(caido_url, _caido_cred(caido_pat))
         if client is None:
             st.warning(err)
         else:
@@ -391,7 +400,7 @@ else:
             st.warning("No endpoints to send — run JS Analysis (and ideally "
                        "**Validate Endpoints**) for this target first.")
         else:
-            client, err = _caido_client(caido_url, caido_pat or CONFIG.get('caido_pat') or "")
+            client, err = _caido_client(caido_url, _caido_cred(caido_pat))
             if client is None:
                 st.warning(err)
             else:
@@ -413,37 +422,37 @@ else:
                     except Exception as e:
                         st.error(f"Caido Replay import failed: {type(e).__name__}: {e}")
 
-        # ---- push AUTHENTICATED candidates (stored AuthSession -> Caido) ----
-        from app.modules.integrations.auth_session import AuthSession as _AuthSession
-        _auth = _AuthSession.load(project_manager.get_current_project_path(), caido_target)
-        if _auth is not None and _auth.authenticated:
-            st.caption(f"🔐 Stored AuthSession found (`{_auth.flow}`) — candidates below are "
-                       f"pushed **with its cookies/bearer** into the raw Replay requests.")
-            if st.button("🚀 Push authenticated candidates to Caido", key="intg_caido_auth_send"):
-                client, err = _caido_client(caido_url, caido_pat or CONFIG.get('caido_pat') or "")
-                if client is None:
-                    st.warning(err)
-                else:
-                    urls = [t['url'] for t in selection['targets']]
-                    auth_hdrs = dict(_auth.auth_headers())
-                    cookie = "; ".join(f"{k}={v}" for k, v in _auth.cookies.items())
-                    if cookie:
-                        auth_hdrs['Cookie'] = cookie
-                    with st.spinner(f"Importing {len(urls)} endpoints (authenticated)...",
-                                    ):
-                        try:
-                            res = client.import_replay_sessions(urls, headers=auth_hdrs)
-                            if isinstance(res, dict):
-                                ids = res.get('session_ids', res.get('ids', res.get('sessions', [])))
-                            else:
-                                ids = res if isinstance(res, list) else []
-                            st.success(f"Sent **{len(urls)}** authenticated endpoint(s) — "
-                                       f"{len(ids)} session(s). Verify in Caido Replay.")
-                        except Exception as e:
-                            st.error(f"Authenticated import failed: {type(e).__name__}: {e}")
-        else:
-            st.caption("No stored AuthSession for this target — create one in **🔐 Auth Sessions** "
-                       "above to push authenticated candidates.")
+    # ---- push AUTHENTICATED candidates (stored AuthSession -> Caido) ----
+    # Outside the send-button block so its own button always renders.
+    from app.modules.integrations.auth_session import AuthSession as _AuthSession
+    _auth = _AuthSession.load(project_manager.get_current_project_path(), caido_target)
+    if _auth is not None and _auth.authenticated:
+        st.caption(f"🔐 Stored AuthSession found (`{_auth.flow}`) — candidates below are "
+                   f"pushed **with its cookies/bearer** into the raw Replay requests.")
+        if st.button("🚀 Push authenticated candidates to Caido", key="intg_caido_auth_send"):
+            client, err = _caido_client(caido_url, _caido_cred(caido_pat))
+            if client is None:
+                st.warning(err)
+            else:
+                urls = [t['url'] for t in selection['targets']]
+                auth_hdrs = dict(_auth.auth_headers())
+                cookie = "; ".join(f"{k}={v}" for k, v in _auth.cookies.items())
+                if cookie:
+                    auth_hdrs['Cookie'] = cookie
+                with st.spinner(f"Importing {len(urls)} endpoints (authenticated)..."):
+                    try:
+                        res = client.import_replay_sessions(urls, headers=auth_hdrs)
+                        if isinstance(res, dict):
+                            ids = res.get('session_ids', res.get('ids', res.get('sessions', [])))
+                        else:
+                            ids = res if isinstance(res, list) else []
+                        st.success(f"Sent **{len(urls)}** authenticated endpoint(s) — "
+                                   f"{len(ids)} session(s). Verify in Caido Replay.")
+                    except Exception as e:
+                        st.error(f"Authenticated import failed: {type(e).__name__}: {e}")
+    else:
+        st.caption("No stored AuthSession for this target — create one in **🔐 Auth Sessions** "
+                   "above to push authenticated candidates.")
 
 st.markdown("#### 📥 Import Caido proxy history")
 
@@ -459,7 +468,7 @@ if target_list:
     st.caption("Pulled via Caido's GraphQL API — the free tier allows 2 projects "
                "/ 7 workflows, which is plenty for history import.")
     if st.button("Import Caido proxy history", key="intg_caido_pull"):
-        client, err = _caido_client(caido_url, caido_pat or CONFIG.get('caido_pat') or "")
+        client, err = _caido_client(caido_url, _caido_cred(caido_pat))
         if client is None:
             st.warning(err)
         else:
@@ -496,21 +505,21 @@ if evidence is not None:
     if st.button("Export evidence bundle", key="intg_evid_export"):
         try:
             result = evidence.export_evidence_bundle(project_path)
-            if isinstance(result, tuple) and len(result) >= 2:
-                count, zip_bytes = result[0], result[1]
-            else:
-                zip_bytes, count = result, None
-            if zip_bytes:
+            count = evidence.evidence_count(project_path)
+            st.session_state['evid_zip'] = result
+            st.session_state['evid_count'] = count
+            if result:
                 st.success(f"Evidence bundle ready — {count or '?'} evidence entries.")
-                st.download_button(
-                    "⬇️ Download evidence bundle", zip_bytes,
-                    file_name=f"evidence_{current_project}_{datetime.now():%Y%m%d}.zip",
-                    mime="application/zip", key="intg_evid_download")
             else:
                 st.info("No evidence entries captured yet — findings can carry "
                         "evidence; add one below or re-run the evidence capture.")
         except Exception as e:
             st.error(f"Evidence export failed: {type(e).__name__}: {e}")
+    if st.session_state.get('evid_zip'):
+        st.download_button(
+            "⬇️ Download evidence bundle", st.session_state['evid_zip'],
+            file_name=f"evidence_{current_project}_{datetime.now():%Y%m%d}.zip",
+            mime="application/zip", key="intg_evid_download")
 
 with st.form(key="intg_evid_note_form"):
     note_target = st.selectbox("Target", target_list or ["—"], key="intg_evid_note_target",

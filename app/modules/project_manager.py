@@ -304,7 +304,7 @@ class ProjectManager:
         try:
             with os.scandir(project_path) as it:
                 for item in it:
-                    if item.is_dir() and not item.name.startswith('.'):
+                    if item.is_dir() and not item.name.startswith('.') and item.name != 'custom_templates':
                         original_target_name = desanitize_target(item.name)
                         targets_dict[original_target_name] = {}
         except Exception as e:

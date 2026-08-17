@@ -200,8 +200,11 @@ with st.expander("🚀 Full Recon (one-click pipeline)"):
                     scope_manager=scope_manager
                 )
                 saved_keys = []
-                # Per-source subdomain results (subfinder_subdomains, resolved_subdomains, live_hosts, ...)
-                for key, df in (recon_runner._last_subdomain_results or {}).items():
+                # Per-source subdomain results are part of the returned dict -
+                # save every DataFrame the pipeline produced.
+                for key, df in results.items():
+                    if key.startswith('_'):
+                        continue
                     if isinstance(df, pd.DataFrame) and not df.empty:
                         project_manager.save_scan_results(key, target_domain, df)
                         saved_keys.append(key)

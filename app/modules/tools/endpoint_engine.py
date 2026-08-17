@@ -485,7 +485,7 @@ class SmartEndpointValidator:
     async def _validate_one(self, session, ep: Dict[str, Any]) -> Dict[str, Any]:
         url = ep["url"]
         parsed = urlparse(url)
-        host = parsed.netloc
+        host = parsed.hostname or ""
 
         # Hard time budget: stop probing, keep the endpoint marked unvalidated
         if self._deadline_exceeded():

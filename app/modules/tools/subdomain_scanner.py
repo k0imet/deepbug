@@ -372,7 +372,7 @@ class SubdomainScanner:
                 with tempfile.NamedTemporaryFile(mode='w+', delete=False) as f:
                     temp_output = f.name
 
-                cmd = [str(self.dnsgen_path), '-w', temp_input, '-f']
+                cmd = [str(self.dnsgen_path), temp_input, '-f']
                 stdout, stderr, ret = run_command(cmd, timeout=120)
 
                 if ret == 0:

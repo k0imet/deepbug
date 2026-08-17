@@ -13,8 +13,10 @@ import httpx
 
 ACCT = '45385674'
 BASE = 'https://gateway.2go.com'
+TOKEN = sys.argv[1] if len(sys.argv) > 1 else ''
+CFBM = sys.argv[2] if len(sys.argv) > 2 else ''
 H = {
-    'Authorization': f'Bearer {sys.argv[1]}',
+    'Authorization': f'Bearer {TOKEN}',
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
     'x-i2g-accept-version': '1.0.0', 'x-i2g-client': 'Web/11.140.0',
@@ -22,7 +24,7 @@ H = {
     'x-i2g-locale': 'en-US', 'x-i2g-platform': 'Linux x86_64', 'x-i2g-timezone': 'Africa/Nairobi',
     'x-i2g-expected-account-id': ACCT, 'Origin': 'https://web.2go.com', 'Referer': 'https://web.2go.com/',
 }
-C = {'__cf_bm': sys.argv[2]}
+C = {'__cf_bm': CFBM}
 
 
 def call(path, label='', method='GET', **kw):
