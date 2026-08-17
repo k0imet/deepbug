@@ -2079,8 +2079,11 @@ with tab8:
                     rv_target_host = ''
                     if isinstance(target_domain, str) and target_domain:
                         rv_target_host = target_domain.lower().rstrip('.')
+                    from app.modules.integrations.auth_session import AuthSession as _RVAuth
+                    _rv_auth = _RVAuth.load(project_manager.get_current_project_path(), target_domain)
                     findings = live_rest_validator.scan(
                         rv_rows, target_host=rv_target_host,
+                        session=(_rv_auth if _rv_auth is not None and _rv_auth.authenticated else None),
                         progress_callback=lambda p, m: rv_progress.progress(
                             min(max(p, 0.0), 1.0), text=m))
                     if findings:

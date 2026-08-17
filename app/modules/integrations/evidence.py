@@ -11,6 +11,9 @@ bad input is coerced or logged, never fatal.
 
 import io
 import json
+import threading
+
+_WRITE_LOCK = threading.Lock()
 import math
 import re
 import zipfile
@@ -168,8 +171,9 @@ def _append_entry(project_path: Any, target: str, kind: str, scan_type: str = ""
             curl, meta,
         )
         line = json.dumps(entry, ensure_ascii=False, default=_json_default) + "\n"
-        with open(evid_dir / EVIDENCE_FILENAME, "a", encoding="utf-8") as fh:
-            fh.write(line)
+        with _WRITE_LOCK:
+            with open(evid_dir / EVIDENCE_FILENAME, "a", encoding="utf-8") as fh:
+                fh.write(line)
     except Exception as exc:  # never raise
         _logger().error("Evidence: failed to append %s entry: %s", kind, exc)
 
