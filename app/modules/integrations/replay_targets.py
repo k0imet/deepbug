@@ -37,6 +37,26 @@ NOISE_SUBSTRINGS = (
 # Hashed bundle fragments: [a-f0-9]{8,} right before an asset extension
 _HASHED = re.compile(r'[.-][a-f0-9]{8,}\.(?:js|css|png|jpg|jpeg|svg|woff2?)$')
 
+# Bug-class hints from URL shape (feeds skill-based push-to-Caido workflows)
+CLASS_HINTS = {
+    'rce': re.compile(r'(cmd|command|exec|run|shell|system|exploit|template|repo|branch|deserialize|yaml|yml|xslt|import|convert|render|download)', re.I),
+    'sqli': re.compile(r'(search|q=|query|filter|sort|order=|id=|uid=|name=|email=|label|page=|lang=|category)', re.I),
+    'xxe': re.compile(r'(xml|soap|upload|import|parse|convert|pdf|svg|xslt|feed|rss|export)', re.I),
+    'ssrf': re.compile(r'(url|uri|image|img|src|fetch|proxy|load|link|webhook|callback|avatar|file|download|render|import|export)', re.I),
+    'csrf': re.compile(r'(settings|profile|delete|update|change|disable|enable|transfer|password|email|token|2fa|mfa)', re.I),
+    'auth': re.compile(r'(login|logout|signin|signup|register|reset|forgot|verify|token|sso|session|logout|password|otp|mfa|2fa)', re.I),
+    'idor': re.compile(r'/(api|rest|v1|v2|users?|orders?|accounts?|profile|item|items|documents?|files?|messages?|stories?|tickets?|payments?|transactions?)/', re.I),
+}
+
+
+def technique_tags(url: str) -> List[str]:
+    """Classify an endpoint into bug-class hints for workflow routing."""
+    tags = []
+    for cls, rx in CLASS_HINTS.items():
+        if rx.search(url):
+            tags.append(cls)
+    return tags
+
 API_HINTS = (
     '/api/', '/v1/', '/v2/', '/v3/', '/rest/', 'graphql', 'gql', '/admin',
     '/internal', '/debug', '/actuator', '/swagger', '/openapi', '/oauth',

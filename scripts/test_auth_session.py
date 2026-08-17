@@ -96,8 +96,8 @@ def main():
         AuthSession(base_url=B).manual(bearer='Bearer tok_happy', cookie_header='a=1; b=2')))
 
     def persist_roundtrip():
-        p = pathlib.Path('/tmp/opencode/authlab/proj')
-        p.mkdir(exist_ok=True)
+        p = pathlib.Path('/tmp/deepbug_auth_proj')
+        p.mkdir(parents=True, exist_ok=True)
         s = AuthSession(base_url=B).oauth2_password('/oauth/token', 'cid', 'sec', 'u', 'p')
         s.target = 'example.com'
         s.save(p)

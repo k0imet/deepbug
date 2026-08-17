@@ -24,34 +24,47 @@ class IDORScanner:
         self.session_b = session_b
 
     def _extract_ids_from_url(self, url: str) -> List[Dict]:
-        """Extract potential ID parameters from a URL (path and query)."""
+        """Extract potential ID parameters from a URL (path and query).
+
+        Generalised: any numeric/uuid path segment (excluding `/v<N>/` version
+        prefixes) plus a wide query-param name set - catches IDs that the old
+        hardcoded-path list missed (e.g. `/api/Users/1`)."""
         findings = []
-        # Pattern: numeric IDs in path or query
-        patterns = [
-            (r'/user/(\d+)', 'numeric', 'path'),
-            (r'/users/(\d+)', 'numeric', 'path'),
-            (r'/profile/(\d+)', 'numeric', 'path'),
-            (r'/order/([a-f0-9-]{36})', 'uuid', 'path'),
-            (r'/order/(\d+)', 'numeric', 'path'),
-            (r'/api/v\d+/(\d+)', 'numeric', 'path'),
-            (r'[?&]id=(\d+)', 'numeric', 'query'),
-            (r'[?&]user_id=(\d+)', 'numeric', 'query'),
-            (r'[?&]uid=([a-f0-9-]+)', 'uuid', 'query'),
-        ]
-        for pattern, id_type, position in patterns:
-            for match in re.finditer(pattern, url):
-                id_value = match.group(1)
-                findings.append({
-                    'url': url,
-                    'id_value': id_value,
-                    'id_type': id_type,
-                    'position': position
-                })
-        return findings
+        # numeric path segments, skipping version prefixes (/v1/, /v2/ ...)
+        for match in re.finditer(r'/(?!v\d+/)(\d{1,12})(?:/|$)', url):
+            findings.append({'url': url, 'id_value': match.group(1),
+                             'id_type': 'numeric', 'position': 'path'})
+        # uuid path segments
+        for match in re.finditer(
+                r'/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:/|$)',
+                url, re.IGNORECASE):
+            findings.append({'url': url, 'id_value': match.group(1),
+                             'id_type': 'uuid', 'position': 'path'})
+        # query params (wide name set)
+        for match in re.finditer(
+                r'[?&](?:id|user_id|uid|order_id|account_id|profile_id|booking_id|'
+                r'item_id|product_id|pid|oid|uuid|key|ref|token|user|owner|'
+                r'customer|client|resource_id)=([a-zA-Z0-9-]+)', url, re.IGNORECASE):
+            findings.append({'url': url, 'id_value': match.group(1),
+                             'id_type': 'query', 'position': 'query'})
+        # dedupe by (position, value)
+        seen = set()
+        out = []
+        for f in findings:
+            k = (f['position'], f['id_value'])
+            if k not in seen:
+                seen.add(k)
+                out.append(f)
+        return out
 
     def _replace_id_in_url(self, url: str, old_id: str, new_id: str) -> str:
-        """Replace the first occurrence of old_id in the URL with new_id."""
-        return url.replace(old_id, new_id, 1)
+        """Replace the ID in the PATH only (never the host/port - old code
+        corrupted 127.0.0.1 -> 227.0.0.1 by replacing the first '1')."""
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(url)
+        path = parts.path.replace(old_id, new_id)
+        return urlunsplit((parts.scheme, parts.netloc, path,
+                           parts.query, parts.fragment))
 
     def _compare_json_responses(self, resp_a: dict, resp_b: dict) -> bool:
         """
