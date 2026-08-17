@@ -413,6 +413,38 @@ else:
                     except Exception as e:
                         st.error(f"Caido Replay import failed: {type(e).__name__}: {e}")
 
+        # ---- push AUTHENTICATED candidates (stored AuthSession -> Caido) ----
+        from app.modules.integrations.auth_session import AuthSession as _AuthSession
+        _auth = _AuthSession.load(project_manager.get_current_project_path(), caido_target)
+        if _auth is not None and _auth.authenticated:
+            st.caption(f"🔐 Stored AuthSession found (`{_auth.flow}`) — candidates below are "
+                       f"pushed **with its cookies/bearer** into the raw Replay requests.")
+            if st.button("🚀 Push authenticated candidates to Caido", key="intg_caido_auth_send"):
+                client, err = _caido_client(caido_url, caido_pat or CONFIG.get('caido_pat') or "")
+                if client is None:
+                    st.warning(err)
+                else:
+                    urls = [t['url'] for t in selection['targets']]
+                    auth_hdrs = dict(_auth.auth_headers())
+                    cookie = "; ".join(f"{k}={v}" for k, v in _auth.cookies.items())
+                    if cookie:
+                        auth_hdrs['Cookie'] = cookie
+                    with st.spinner(f"Importing {len(urls)} endpoints (authenticated)...",
+                                    ):
+                        try:
+                            res = client.import_replay_sessions(urls, headers=auth_hdrs)
+                            if isinstance(res, dict):
+                                ids = res.get('session_ids', res.get('ids', res.get('sessions', [])))
+                            else:
+                                ids = res if isinstance(res, list) else []
+                            st.success(f"Sent **{len(urls)}** authenticated endpoint(s) — "
+                                       f"{len(ids)} session(s). Verify in Caido Replay.")
+                        except Exception as e:
+                            st.error(f"Authenticated import failed: {type(e).__name__}: {e}")
+        else:
+            st.caption("No stored AuthSession for this target — create one in **🔐 Auth Sessions** "
+                       "above to push authenticated candidates.")
+
 st.markdown("#### 📥 Import Caido proxy history")
 
 if target_list:

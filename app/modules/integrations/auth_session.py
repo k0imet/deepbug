@@ -304,6 +304,16 @@ class AuthSession:
                 return False
         return r.status_code in expect
 
+    def requests_session(self):
+        """Return a requests.Session carrying this auth context (cookies +
+        bearer). Bridges into legacy tools (idor_scanner) that use requests."""
+        import requests
+        s = requests.Session()
+        s.headers.update(self.auth_headers())
+        if self.cookies:
+            s.cookies.update(self.cookies)
+        return s
+
 
 def default_project_path(config) -> Path:
     """projects dir for the active project (used by page code)."""

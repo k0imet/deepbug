@@ -177,8 +177,10 @@ class CaidoClient:
             raise ValueError(f"Caido GraphQL error: {'; '.join(messages) or errors}")
 
     @staticmethod
-    def _parse_url(url: str) -> Dict:
-        """Split a URL into host/port/scheme/tls/sni/raw-request parts."""
+    def _parse_url(url: str, headers: Optional[Dict[str, str]] = None) -> Dict:
+        """Split a URL into host/port/scheme/tls/sni/raw-request parts.
+        Extra headers (e.g. Authorization/cookies from an AuthSession) are
+        injected into the raw request so authenticated testing works in Replay."""
         parsed = urlparse(url)
         scheme = (parsed.scheme or "http").lower()
         tls = scheme == "https"
@@ -188,7 +190,10 @@ class CaidoClient:
         path = parsed.path or "/"
         if parsed.query:
             path += f"?{parsed.query}"
-        raw = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+        raw = f"GET {path} HTTP/1.1\r\nHost: {host}\r\n"
+        for k, v in (headers or {}).items():
+            raw += f"{k}: {v}\r\n"
+        raw += "Connection: close\r\n\r\n"
         return {
             "host": host, "port": port, "tls": tls, "sni": host, "path": path,
             "raw": raw, "scheme": scheme,
@@ -196,8 +201,13 @@ class CaidoClient:
 
     # -------------------------------------------------------------- replay
     def import_replay_sessions(self, urls: List[str],
-                               name: str = "DeepBug import") -> List[str]:
+                               name: str = "DeepBug import",
+                               headers: Optional[Dict[str, str]] = None) -> List[str]:
         """Create a replay session per URL and fire a raw GET replay task.
+
+        headers: extra request headers injected into each raw request (e.g.
+        {'Authorization': 'Bearer ...', 'Cookie': '...'}) for authenticated
+        testing inside Caido Replay.
 
         Returns the list of successfully created replay-session ids; per-URL
         failures are logged (and skipped) rather than aborting the batch.
@@ -205,7 +215,7 @@ class CaidoClient:
         ids: List[str] = []
         for idx, url in enumerate(urls):
             try:
-                parts = self._parse_url(url)
+                parts = self._parse_url(url, headers)
                 if not parts["host"]:
                     raise ValueError(f"could not parse host from '{url}'")
                 session_id = self._create_session(name, idx, parts)

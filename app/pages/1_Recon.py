@@ -2118,25 +2118,43 @@ with tab8:
 
     if urls:
         st.info(f"Testing {len(urls)} URLs for IDOR.")
-        st.caption("IDOR/BOLA testing requires two authenticated sessions from different user accounts. "
-                   "Paste each account's Cookie header below.")
+        # Prefer stored AuthSessions (owner + attacker) over pasted cookies
+        from app.modules.integrations.auth_session import AuthSession as _AuthSession
+        _as_owner = _AuthSession.load(project_manager.get_current_project_path(), target_domain)
+        _as_attacker = None
+        if _as_owner is not None:
+            _as_attacker = _AuthSession.load(project_manager.get_current_project_path(),
+                                             f'{target_domain}-attacker')
+        _use_sessions = bool(_as_owner is not None and _as_attacker is not None
+                             and _as_owner.authenticated and _as_attacker.authenticated)
+        if _use_sessions:
+            st.caption(f"Using stored AuthSessions: `{target_domain}` (owner) + "
+                       f"`{target_domain}-attacker` — differential IDOR test.")
+        else:
+            st.caption("IDOR/BOLA testing requires two authenticated sessions from different user accounts. "
+                       "Create them in Integrations → 🔐 Auth Sessions (owner target + "
+                       "`<target>-attacker`), or paste each account's Cookie header below.")
         col_a, col_b = st.columns(2)
         with col_a:
             cookie_a = st.text_input("Session A cookie (User A - resource owner):", key="idor_cookie_a", type="password")
         with col_b:
             cookie_b = st.text_input("Session B cookie (User B - attacker):", key="idor_cookie_b", type="password")
 
-        if not cookie_a or not cookie_b:
-            st.warning("Provide both session cookies to run the IDOR scan.")
+        if not _use_sessions and (not cookie_a or not cookie_b):
+            st.warning("Provide both session cookies (or two AuthSessions) to run the IDOR scan.")
         elif st.button("🔐 Run IDOR Scan", key="run_idor"):
             with st.spinner("Scanning..."):
                 progress = st.progress(0.0)
                 try:
                     import requests as _requests
-                    sess_a = _requests.Session()
-                    sess_a.headers.update({'Cookie': cookie_a, 'User-Agent': 'DeepBug-IDOR/1.0'})
-                    sess_b = _requests.Session()
-                    sess_b.headers.update({'Cookie': cookie_b, 'User-Agent': 'DeepBug-IDOR/1.0'})
+                    if _use_sessions:
+                        sess_a = _as_owner.requests_session()
+                        sess_b = _as_attacker.requests_session()
+                    else:
+                        sess_a = _requests.Session()
+                        sess_a.headers.update({'Cookie': cookie_a, 'User-Agent': 'DeepBug-IDOR/1.0'})
+                        sess_b = _requests.Session()
+                        sess_b.headers.update({'Cookie': cookie_b, 'User-Agent': 'DeepBug-IDOR/1.0'})
                     idor_scanner.set_sessions(sess_a, sess_b)
                     idor_df = idor_scanner.scan(urls, progress_callback=lambda p, m: progress.progress(p, m))
                     if not idor_df.empty:

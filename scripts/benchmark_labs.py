@@ -60,7 +60,7 @@ def bench_vampi():
     record('vampi REST SQLi', hit, f"{len(findings)} finding(s): " + '; '.join(f['evidence'] for f in findings[:2]))
 
 
-_DVGA_DB = '/tmp/opencode/dvga/dvga.db'
+_DVGA_DB = os.path.join(os.path.expanduser('~'), '.deepbug_labs', 'dvga', 'dvga.db')
 
 
 def _dvga_set_hardened(hardened: bool):
