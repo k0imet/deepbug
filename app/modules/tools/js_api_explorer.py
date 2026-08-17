@@ -1293,13 +1293,15 @@ class JSApiExplorer:
         # Sort query params
         try:
             parsed = urlparse(url)
-            if parsed.query:
-                qs = parse_qs(parsed.query)
-                sorted_qs = sorted(qs.items())
-                new_query = urlencode(sorted_qs, doseq=True)
-                url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{new_query}"
-            else:
-                url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            if parsed.scheme and parsed.netloc:
+                if parsed.query:
+                    qs = parse_qs(parsed.query)
+                    sorted_qs = sorted(qs.items())
+                    new_query = urlencode(sorted_qs, doseq=True)
+                    url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{new_query}"
+                else:
+                    url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            # bare-relative ('users/123') stays as-is; absolutized later
         except Exception:
             pass
         return url
@@ -1346,7 +1348,7 @@ class JSApiExplorer:
             if any(x in lower_key for x in ['debug', 'test', 'role', 'admin', 'token']):
                 indicators.append('sensitive_query_param')
 
-        request.suspicious_indicators = indicators
+        request.suspicious_indicators = list(getattr(request, 'suspicious_indicators', [])) + indicators
 
         # Assign severity based on indicator count and type
         if any(x in indicators for x in ['admin_endpoint', 'auth_bypass', 'graphql_mutation']):

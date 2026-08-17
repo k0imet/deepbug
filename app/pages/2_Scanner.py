@@ -265,6 +265,7 @@ scan_options = {
     'severity': scan_severity or None,
     'rate': int(scan_rate),
     'concurrency': int(scan_conc),
+    'is_workflow': bool(scan_workflow),
 }
 start_scan = st.button("🚀 Start Scan", type="primary", disabled=(st.session_state.scan_status == 'running'))
 
@@ -317,6 +318,14 @@ if st.session_state.scan_status == 'running':
     st.rerun()
 
 elif st.session_state.scan_status == 'completed':
+    if st.session_state.get('scan_saved') and st.session_state.scan_results is not None:
+        st.success(f"Scan finished: {len(st.session_state.scan_results)} vulnerabilities saved to disk.")
+        st.dataframe(st.session_state.scan_results, width='stretch')
+        if st.button("Reset", key="reset_scan_completed_2"):
+            _reset_scan_state()
+            st.rerun()
+        st.stop()
+    st.session_state.scan_saved = True
     result_df = st.session_state.scan_results
     if isinstance(result_df, pd.DataFrame) and not result_df.empty:
         result_df = _attach_target_column(result_df, scan_targets)

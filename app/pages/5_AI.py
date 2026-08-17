@@ -144,7 +144,7 @@ else:
                                key="ai_chat_input")
         submitted = st.form_submit_button("Send", use_container_width=True)
 
-    if (prompt or submitted) and prompt:
+    if submitted and prompt:
         st.session_state.ai_chat_messages.append({'role': 'user', 'content': prompt})
         with st.chat_message('user'):
             st.markdown(prompt)
@@ -219,10 +219,13 @@ else:
                 st.caption("Local heuristic analysis — connect an AI endpoint above for LLM-powered output.")
             st.markdown(result.get('text') or "No output.")
         if result.get('text'):
-            st.download_button(
-                "📥 Download analysis", result['text'],
-                f"{scan_type}_{target}_{mode}_{datetime.now():%Y%m%d_%H%M}.md",
-                "text/markdown")
+            st.session_state['ai_last_result'] = {
+                'text': result['text'], 'name': f"{scan_type}_{target}_{mode}_{datetime.now():%Y%m%d_%H%M}.md"}
+    if st.session_state.get('ai_last_result'):
+        st.download_button(
+            "📥 Download analysis", st.session_state['ai_last_result']['text'],
+            st.session_state['ai_last_result']['name'],
+            "text/markdown", key="dl_ai_result")
 
 st.markdown("---")
 st.caption("DeepBug uses plain HTTP to OpenAI-compatible `/chat/completions` endpoints — "

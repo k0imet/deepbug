@@ -237,15 +237,21 @@ else:
                 report_sections_html="\n".join(report_sections)
             )
 
-            # Provide a download button for the generated HTML report
-            st.download_button(
-                label="Download HTML Report",
-                data=html_content,
-                file_name=f"{report_title.replace(' ', '_').lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                mime="text/html"
-            )
-            st.success("Report generated! Click the 'Download HTML Report' button above.")
+            # Store for the unconditional download button below (buttons inside
+            # click-blocks never render on their own rerun).
+            st.session_state['report_html'] = html_content
+            st.session_state['report_name'] = f"{report_title.replace(' ', '_').lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+            st.success("Report generated! Click the 'Download HTML Report' button below.")
 
+
+if st.session_state.get('report_html'):
+    st.download_button(
+        label="Download HTML Report",
+        data=st.session_state['report_html'],
+        file_name=st.session_state.get('report_name', 'deepbug_report.html'),
+        mime="text/html",
+        key="report_dl_outside",
+    )
 
 st.divider()
 

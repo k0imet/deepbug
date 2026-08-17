@@ -44,11 +44,11 @@ class PortScanner:
         try:
             result = subprocess.run(
                 cmd,
-                shell=True, # Keeping shell=True because 'cmd' is constructed as a string in run_port_scan
+                shell=isinstance(cmd, str),
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                check=True # Raise CalledProcessError if return code is non-zero
+                check=True  # Raise CalledProcessError if return code is non-zero
             )
             if progress_callback:
                 progress_callback(1, f"{tool_name} completed.")
@@ -94,14 +94,10 @@ class PortScanner:
                 raise FileNotFoundError(f"Nmap executable not found at {self.nmap_path}")
 
             pr = (port_range or '').strip()
-            if not pr or pr == '-p-':
-                ports_arg = '-p-'
-            else:
-                ports_arg = f'-p {pr}'
-            # -p- for all ports (or the requested range), -Pn to skip host discovery
-            # (useful for targets that block ping), -sV for service/version detection,
-            # -oG for greppable output.
-            cmd = f"{self.nmap_path} {ports_arg} -sV -T4 --open {target} -oG -"
+            ports = ['-p-'] if not pr or pr == '-p-' else ['-p', pr]
+            # -p- for all ports (or the requested range), -sV for service/version
+            # detection, -oG for greppable output. argv list -> no shell.
+            cmd = [str(self.nmap_path), *ports, '-sV', '-T4', '--open', target, '-oG', '-']
             output = self._run_command(cmd, 'Nmap', timeout=900, progress_callback=progress_callback) # Nmap can be slow
             return self._parse_nmap_greppable_output(output, target)
 
@@ -112,8 +108,8 @@ class PortScanner:
             
             pr = (port_range or '').strip()
             ports_arg = f'-p{pr}' if pr and pr != '-p-' else '-p0-65535'
-            # --rate 1000 for 1000 packets/sec (adjust as needed), -p 0-65535 for all ports
-            cmd = f"{self.masscan_path} {target} {ports_arg} --rate {self.config['tools']['rate_limits'].get('masscan', 1000)} --wait 0"
+            cmd = [str(self.masscan_path), target, ports_arg, '--rate',
+                   str(self.config['tools']['rate_limits'].get('masscan', 1000)), '--wait', '0']
             output = self._run_command(cmd, 'Masscan', timeout=300, progress_callback=progress_callback)
             return self._parse_masscan_output(output, target)
 
@@ -127,7 +123,7 @@ class PortScanner:
             # To integrate with Nmap for service detection, you'd typically pipe Naabu output to Nmap.
             # For simplicity here, we'll just get the basic open ports from Naabu.
             # A more advanced setup might use -nmap-cli with naabu.
-            cmd = f"{self.naabu_path} -host {target} -p - -silent"
+            cmd = [str(self.naabu_path), '-host', target, '-p', '-', '-silent']
             # Naabu is very fast, so a shorter timeout is generally fine, but keep it reasonable.
             output = self._run_command(cmd, 'Naabu', timeout=120, progress_callback=progress_callback)
             return self._parse_naabu_output(output, target)
