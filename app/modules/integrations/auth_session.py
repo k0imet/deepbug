@@ -191,7 +191,10 @@ class AuthSession:
                 raise AuthError(f'form_login transport error: {e}')
             if page.status_code not in (200, 302):
                 raise AuthError(f'form_login page HTTP {page.status_code}')
-            self.cookies.update(dict(page.cookies))
+            pre_cookies = dict(page.cookies)
+            # page cookies (anon session + CSRF) are NOT authentication
+            # evidence; only capture them as session cookies AFTER a
+            # successful POST.
             data = {username_field: username, password_field: password}
             wanted = [w.lower() for w in (csrf_fields or [])]
             for name, value in re.findall(
@@ -206,6 +209,7 @@ class AuthSession:
                 r = c.post(urljoin(self.base_url, url), data=data)
             except httpx.HTTPError as e:
                 raise AuthError(f'form_login post error: {e}')
+            self.cookies = dict(pre_cookies)
             self.cookies.update(dict(r.cookies))
             # token in body?
             try:
@@ -215,7 +219,7 @@ class AuthSession:
             if access:
                 self.bearer = access
                 self.refresh_token = refresh
-            if r.status_code >= 400 and not self.authenticated:
+            if r.status_code >= 400:
                 raise AuthError(f'form_login HTTP {r.status_code}: {r.text[:200]}')
             if not self.authenticated:
                 raise AuthError('form_login: no session cookie or token established '

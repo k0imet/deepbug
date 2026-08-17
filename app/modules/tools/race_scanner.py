@@ -1,3 +1,4 @@
+import json
 """
 race_scanner.py — identical-copies race detection.
 

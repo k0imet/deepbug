@@ -244,6 +244,8 @@ class AIAnalyzer:
                 async for chunk in self._chat_stream(prompt):
                     text_chunks.append(chunk)
                 text = "".join(text_chunks)
+                if text.startswith('⚠️'):
+                    raise RuntimeError(text[:120])
                 usage = None
             else:
                 text, usage = await self._chat_with_retry(prompt, use_json)

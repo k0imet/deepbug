@@ -76,3 +76,51 @@ Integrations + validators + core/utils audit ran but returned no output — reru
 cors/pp/dom_xss/open_redirect/ssrf/live_rest/idor/graphql family/ai_analyzer,
 burp/caido/auth_session/preview_corpus/evidence/replay_targets,
 project_manager/recon/scanner/utils + scripts.
+
+---
+
+# Round 2 — validators & integrations audit (40 findings)
+
+## FIXED this round
+| # | Location | Fix |
+|---|---|---|
+| R1 | live_rest_validator path-inject | payloads now urlencoded (were silently dead) |
+| R2 | ssrf_validator OOB | one dedicated oob-callback row instead of mass-upgrading unrelated rows |
+| R3 | 1_Recon REST battery | stored AuthSession now injected into probes (was silently unauth) |
+| R4 | live_rest_validator login | signatures baseline-diffed ("invalid credentials" no longer self-FPs) |
+| R5 | ai_analyzer streaming | `⚠️` error streams no longer cached as successful AI output |
+| R6 | race_scanner | `import json` added (CLI crashed) |
+| R7 | evidence.py | `_WRITE_LOCK` serializes JSONL appends (interleaving corruption) |
+| R8 | pp_validator._with_query | fragment-safe (payload went into `#frag`, never sent) |
+| R9 | auth_session.form_login | page cookies no longer count as an authenticated session |
+| R10 | evidence count vs list | noted divergence (counts corrupt lines) - fix deferred |
+
+## OPEN (documented, prioritized)
+- V1 dependency_confusion.scan is an unimplemented stub (UI shows clean results) → implement or raise
+- V2 graphql_scanner 'gated_auth' matches plain REST 401s → clairvoyance burns 2500 req budget on non-GraphQL
+- V3 idor_scanner: path replace mutates every substring (12→13, 133); query-param IDs extracted but never tested
+- V4 cors_validator suffix-echo branch inverted + unreachable (misses subdomain-echo CORS)
+- V5 open_redirect_scanner 'encoded'/'double' techniques double-encoded
+- V6 auth_session.refresh omits client_id/audience; `expired` never consulted
+- V7 xxe_scanner computed Content-Type never applied to POSTs
+- V8 forgot_password_prober token FP (matches the form template itself)
+- V9 rate_limit_tester: any 400 → "rate limit detected"
+- V10 dom_xss third-party regex matched against code window not src
+- V11 replay_targets: dedup drops method/query; technique_tags substring collisions (uri→security, q=→aq=)
+- V12 cors_scanner flags `*` without credentials; ssrf_scanner single-signal noise rows
+- V13 graphql_security_probes `__typename` substring FPs on echoed params
+- V14 secret_chainer appkey "verified" on any 2xx; chain never fed endpoints from page
+- V15 mass_assignment merges juggled params with original query
+- V16 bypass_403: 500 WAF pages counted as bypasses
+- V17 websocket_scanner: any 400/403 handshake → origin_required
+- V18 host_header_scanner Forwarded payloads parsers ignore; semaphore doesn't bound
+- V19 supply_chain registrable-domain heuristic breaks on co.uk etc.
+- V20 jwt/xxe/race/rate_limit/vhost/websocket/forgot_password/host_header/auth_gateway scan_sync: bare asyncio.run (no running-loop guard)
+- V21 ai_analyzer Azure endpoint missing deployment path; json_object sent to Ollama
+- V22 burp._b64_or_plain decodes base64-valid plain text into garbage (no round-trip check)
+- V23 ssrf robots fingerprint FPs when target URL is itself /robots.txt
+- V24 open_redirect OOB bare-base variant without ?v= marker (callback invisible to poll)
+- V25 auth_gateway 500 catch-alls classified alive
+- V26 clairvoyance batch size reads private Semaphore._value
+- V27 caido import always GET regardless of endpoint method
+- V28 nuclei_targets_temp.txt: shared relative path → cross-scan race (core pass spot-check)

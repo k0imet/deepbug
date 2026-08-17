@@ -92,10 +92,15 @@ class PrototypePollutionValidator:
     # -----------------------------------------------------------------
     @staticmethod
     def _with_query(url: str, payload: str) -> str:
-        """Append a raw payload pair to the query string (payload is NOT url-encoded -
-        brackets/dots must survive to reach the vulnerable parser)."""
-        sep = '&' if urlparse(url).query else '?'
-        return f"{url}{sep}{payload}"
+        """Append a raw payload pair to the QUERY (fragment-safe). Payload is
+        NOT url-encoded - brackets/dots must survive to the vulnerable parser."""
+        from urllib.parse import urlunparse
+        parsed = urlparse(url)
+        # NOTE: urlunparse inserts the '?' itself - the query component must
+        # NOT include a leading separator.
+        query = parsed.query + ('&' if parsed.query else '') + payload
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params,
+                           query, parsed.fragment))
 
     # =================================================================
     # Phase B: browser confirmation (definitive for client-side PP)

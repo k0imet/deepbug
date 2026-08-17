@@ -192,8 +192,9 @@ class LiveRestValidator:
                     findings.append(self._row(url, 'GET', pname, p,
                                               base_status, st, body))
             if not findings:
+                from urllib.parse import quote as _quote
                 for p in payloads[:self.max_payloads]:
-                    probe_url = url + ('&' if '?' in url else '?') + 'x=' + p
+                    probe_url = url + ('&' if '?' in url else '?') + 'x=' + _quote(p)
                     st, body = await self._get(session, probe_url)
                     body = body or ''
                     sig = _SQLI_SIG.search(body) or _NOSQLI_SIG.search(body)
@@ -227,8 +228,11 @@ class LiveRestValidator:
             body_payload = {field: value, 'password': 'x'}
             st, body = await self._post_json(session, url, body_payload)
             body = body or ''
-            sig = _SQLI_SIG.search(body) or _NOSQLI_SIG.search(body) or \
-                _AUTH_SIG.search(body)
+            # Only signatures NOT present in the baseline body count: the
+            # baseline itself says "invalid credentials" on a normal login,
+            # so _AUTH_SIG alone is self-referential noise.
+            base_sql = _SQLI_SIG.search(base_body) or _NOSQLI_SIG.search(base_body)
+            sig = (_SQLI_SIG.search(body) or _NOSQLI_SIG.search(body)) and not base_sql
             # a 200/302 vs the baseline 4xx is an auth bypass signal
             authz = (st in (200, 201, 302) and base_status in (400, 401, 403, 422))
             if st != base_status or sig or authz:
