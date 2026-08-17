@@ -31,4 +31,3 @@ app/modules/tools/registry_cache.db
 
 # Local agent skills (machine-specific symlinks)
 .agents/
-.authlab/
