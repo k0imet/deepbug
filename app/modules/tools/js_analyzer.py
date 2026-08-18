@@ -56,6 +56,8 @@ try:
     from app.modules.tools.api_key_scanner import ApiKeyScanner
     from app.modules.tools.js_semantic import JSSemanticExtractor
     from app.modules.tools import js_security
+    from app.modules.tools import js_protocol
+    from app.modules.tools import js_taint
     from app.modules.tools.endpoint_engine import (
         EndpointExtractor, SmartEndpointValidator,
         extract_sourcemap_url, unpack_sourcemap, enumerate_webpack_chunks,
@@ -71,6 +73,8 @@ except ImportError:  # pragma: no cover - streamlit pages import as `modules.too
     from modules.tools.api_key_scanner import ApiKeyScanner
     from modules.tools.js_semantic import JSSemanticExtractor
     from modules.tools import js_security
+    from modules.tools import js_protocol
+    from modules.tools import js_taint
     from modules.tools.endpoint_engine import (
         EndpointExtractor, SmartEndpointValidator,
         extract_sourcemap_url, unpack_sourcemap, enumerate_webpack_chunks,
@@ -455,6 +459,9 @@ VULNERABLE_LIBRARIES = {
     ],
     'angular': [
         (None, '1.8.0', 'CVE-2020-7676 - XSS via svg/xlink href binding', 'MEDIUM'),
+    ],
+    'underscore': [
+        (None, '1.13.0-0', "CVE-2021-26675 - Prototype pollution in template/interpolation", 'HIGH'),
     ],
 }
 
@@ -1030,6 +1037,9 @@ class JSAnalyzer:
             'jwt_correlation': [],
             'service_graph': {'hosts': [], 'edges': [], 'auth_relationships': []},
             'oidc_config': [],
+            'ws_protocol': [], 'service_workers': [], 'push_keys': [],
+            'ssrf_candidates': [], 'error_services': [], 'auth_guards': [],
+            'taint': [],
         }
 
         js_urls = list(dict.fromkeys(js_urls))
@@ -1135,6 +1145,9 @@ class JSAnalyzer:
                 results['spa_routes'].extend(per.get('routes', []))
                 results['nonprod_hosts'].extend(per.get('nonprod', []))
                 results['jwts'].extend(per.get('jwts', []))
+                for _pk in ('ws_protocol', 'service_workers', 'push_keys',
+                            'ssrf_candidates', 'error_services', 'auth_guards', 'taint'):
+                    results[_pk].extend(per.get(_pk, []))
                 if progress_callback and ((idx + 1) % 5 == 0 or idx + 1 == total_files):
                     _emit((idx + 1) / total_files,
                                       f"Analyzed {idx + 1}/{total_files} JS files | "
@@ -1159,7 +1172,9 @@ class JSAnalyzer:
 
                 _FEEDER_KEYS = ('secrets', 'api_keys', 'frameworks', 'proto', 'clobbing',
                                 'postmsg', 'dangerous', 'jsonp', 'rendering', 'csp',
-                                'routes', 'nonprod', 'jwts')
+                                'routes', 'nonprod', 'jwts', 'ws_protocol',
+                                'service_workers', 'push_keys', 'ssrf_candidates',
+                                'error_services', 'auth_guards', 'taint')
 
                 def _extend_feeder_findings(per, original_src=''):
                     for key in _FEEDER_KEYS:
@@ -1969,6 +1984,8 @@ class JSAnalyzer:
                'secrets': [], 'api_keys': [], 'frameworks': [], 'proto': [], 'clobbing': [], 'postmsg': [],
                'dangerous': [], 'jsonp': [], 'rendering': [], 'csp': [], 'library': None,
                'routes': [], 'nonprod': [], 'jwts': [],
+               'ws_protocol': [], 'service_workers': [], 'push_keys': [],
+               'ssrf_candidates': [], 'error_services': [], 'auth_guards': [], 'taint': [],
                'file': {'url': url, 'size': len(js_content),
                         'size_human': self._human_readable_size(len(js_content))}}
 
@@ -2051,6 +2068,26 @@ class JSAnalyzer:
             out['nonprod'] = self._detect_nonprod_hosts(scan, url)
         if self.detect_jwts:
             out['jwts'] = self._detect_jwts(scan, url)
+        # v3.6.1: protocol intel (ws/service-worker/push/ssrf/error-services/
+        # client auth guards) + source->sink taint candidates
+        try:
+            proto = js_protocol.scan_js(scan, url)
+            out['ws_protocol'] = proto.get('ws_protocol', [])
+            out['service_workers'] = proto.get('service_workers', [])
+            out['push_keys'] = proto.get('push_keys', [])
+            out['ssrf_candidates'] = proto.get('ssrf_candidates', [])
+            out['error_services'] = proto.get('error_services', [])
+            out['auth_guards'] = proto.get('auth_guards', [])
+        except Exception as e:
+            logger.debug(f"js_protocol scan failed for {url}: {e}")
+            for k in ('ws_protocol', 'service_workers', 'push_keys',
+                      'ssrf_candidates', 'error_services', 'auth_guards'):
+                out[k] = []
+        try:
+            out['taint'] = js_taint.scan_taint(scan, url)
+        except Exception as e:
+            logger.debug(f"js_taint scan failed for {url}: {e}")
+            out['taint'] = []
         return out
 
     def analyze_js_urls(self, js_urls: List[str],
@@ -2270,6 +2307,20 @@ class JSAnalyzer:
                 'issuer', 'authorization_endpoint', 'token_endpoint',
                 'userinfo_endpoint', 'jwks_uri', 'host',
                 'grant_types_supported', 'scopes_supported', 'jwks_keys'])
+
+        # v3.6.1 protocol / taint frames
+        ws_proto_df = pd.DataFrame(results.get('ws_protocol', []))
+        sw_df = pd.DataFrame(results.get('service_workers', []))
+        push_df = pd.DataFrame(results.get('push_keys', []))
+        ssrf_df2 = pd.DataFrame(results.get('ssrf_candidates', []))
+        errsvc_df = pd.DataFrame(results.get('error_services', []))
+        guards_df = pd.DataFrame(results.get('auth_guards', []))
+        taint_df = pd.DataFrame(results.get('taint', []))
+        for _d in (ws_proto_df, sw_df, push_df, ssrf_df2, errsvc_df, guards_df, taint_df):
+            if _d.empty:
+                for _c in ('type', 'value', 'line', 'context', 'source', 'severity', 'confidence'):
+                    if _c not in _d.columns:
+                        _d[_c] = ''
         sg = results.get('service_graph') or {}
         hosts_df = pd.DataFrame(sg.get('hosts', []))
         edges_df = pd.DataFrame(sg.get('edges', []))
@@ -2312,6 +2363,13 @@ class JSAnalyzer:
             'js_service_graph_edges': edge_df,
             'js_auth_relationships': authrel_df,
             'js_oidc_config': oidc_df,
+            'js_ws_protocol': ws_proto_df,
+            'js_service_workers': sw_df,
+            'js_push_keys': push_df,
+            'js_ssrf_candidates': ssrf_df2,
+            'js_error_services': errsvc_df,
+            'js_auth_guards': guards_df,
+            'js_taint_candidates': taint_df,
         }
 
     def _flatten_api_request(self, req: Dict) -> Dict:
@@ -2412,6 +2470,13 @@ class JSAnalyzer:
                 'issuer', 'authorization_endpoint', 'token_endpoint',
                 'userinfo_endpoint', 'jwks_uri', 'host',
                 'grant_types_supported', 'scopes_supported', 'jwks_keys']),
+            'js_ws_protocol': pd.DataFrame(columns=['type', 'value', 'event', 'line', 'context', 'source', 'severity', 'confidence']),
+            'js_service_workers': pd.DataFrame(columns=['type', 'value', 'line', 'context', 'source', 'severity', 'confidence', 'note']),
+            'js_push_keys': pd.DataFrame(columns=['type', 'value', 'line', 'context', 'source', 'severity', 'confidence']),
+            'js_ssrf_candidates': pd.DataFrame(columns=['type', 'value', 'line', 'context', 'source', 'severity', 'confidence', 'note']),
+            'js_error_services': pd.DataFrame(columns=['type', 'service', 'value', 'line', 'context', 'source', 'severity', 'confidence']),
+            'js_auth_guards': pd.DataFrame(columns=['type', 'value', 'line', 'context', 'source', 'severity', 'confidence', 'note']),
+            'js_taint_candidates': pd.DataFrame(columns=['type', 'sink', 'source', 'function', 'line', 'context', 'source_url', 'severity', 'confidence', 'note']),
         }
 
     @staticmethod
