@@ -122,7 +122,7 @@ def main():
         elif name == 'mock':
             up_mock_auth()
         elif name in TARGETS:
-            subprocess.run(TARGETS[name][2], capture_output=True)
+            subprocess.run(TARGETS[name][1], capture_output=True)
     print('waiting for health...')
     time.sleep(6)
     for name in selected:

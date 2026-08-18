@@ -90,6 +90,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._send(400, json.dumps({'error': 'invalid_grant'}))
             else:
                 self._send(400, json.dumps({'error': 'unsupported_grant_type'}))
+        elif p == '/auth/anonymous-mint':
+            # VULNERABLE BY DESIGN: mints a bearer token with NO auth and
+            # trusts client-supplied role/scope/identity claims.
+            import base64 as _b64, json as _json
+            data = json.loads(raw or b'{}')
+            role = data.get('role', 'user')
+            claims = {'sub': data.get('identity', 'anonymous'),
+                      'role': role,
+                      'scope': data.get('scope', ''),
+                      'user_id': data.get('user_id'),
+                      'is_admin': data.get('is_admin', False)}
+            header = _b64.urlsafe_b64encode(_json.dumps({'alg': 'none', 'typ': 'JWT'}).encode()).rstrip(b'=')
+            payload = _b64.urlsafe_b64encode(_json.dumps(claims).encode()).rstrip(b'=')
+            self._send(200, _json.dumps({'access_token': (header + b'.' + payload).decode(),
+                                         'token_type': 'Bearer'}))
+        elif p == '/auth/admin-panel' and 'Authorization' in str(self.headers):
+            # minted tokens (any value) authorize this - vulnerable design
+            self._send(200, json.dumps({'admin': 'welcome'}))
         else:
             self._send(404, b'{"error":"nf"}')
 

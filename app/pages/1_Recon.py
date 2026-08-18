@@ -26,6 +26,7 @@ from app.modules.tools.param_miner import ParamMiner
 from app.modules.tools.cors_scanner import CORSHeadersScanner
 from app.modules.tools.graphql_scanner import GraphQLScanner
 from app.modules.tools.live_rest_validator import LiveRestValidator
+from app.modules.tools.bearer_mint_prober import BearerMintProber
 from app.modules.tools.idor_scanner import IDORScanner
 from app.modules.tools.dependency_confusion import DependencyConfusionScanner
 from app.modules.tools.kxss_scanner import KXSSScanner
@@ -154,6 +155,7 @@ param_miner = ParamMiner(CONFIG)
 cors_scanner = CORSHeadersScanner(CONFIG)
 graphql_scanner = GraphQLScanner(CONFIG)
 live_rest_validator = LiveRestValidator(CONFIG)
+bearer_mint_prober = BearerMintProber(CONFIG)
 idor_scanner = IDORScanner(CONFIG)
 dependency_scanner = DependencyConfusionScanner(CONFIG)
 kxss_scanner = KXSSScanner(CONFIG)
@@ -769,10 +771,9 @@ with tab3:
 
     # ---- RESULTS: sub-tabbed so no single section dominates the page ----
     st.markdown("---")
-    js_sub1, js_sub2, js_sub3, js_sub4, js_sub5, js_sub6, js_sub7, js_sub8, js_sub9, js_sub10 = st.tabs([
+    js_sub1, js_sub2, js_sub3, js_sub4, js_sub5, js_sub6, js_sub7 = st.tabs([
         "📊 Overview", "🔑 Secrets & Patterns", "⚠️ Client-Side Vectors", "📂 Endpoints",
-        "🧪 PP Validation", "🖥️ DOM XSS", "🌐 CORS", "↩️ Open Redirect", "📡 SSRF",
-        "🔐 API Keys"
+        "🧪 Active Validation", "🪙 Bearer Mint", "🔐 API Keys"
     ])
 
     # Preload all stored frames once. Individual js_* keys are written by the
@@ -1058,8 +1059,10 @@ with tab3:
 
     # ================= PP VALIDATION =================
     with js_sub5:
-        st.caption("Active confirmation of PP vectors: injects `__proto__` canaries via query/hash/JSON body "
-                   "and checks if `Object.prototype` gets polluted (headless browser = definitive proof).")
+        st.subheader("🧪 Active Validation")
+        st.caption("PP / DOM XSS / CORS / Open Redirect / SSRF confirmation, in one place. "
+                   "PP injects `__proto__` canaries (headless-browser proof of Object.prototype "
+                   "pollution); the others confirm static candidates live.")
 
         pp_urls = list(urls)  # live hosts / fallback from the top of this tab
         if _has(endpoints_df) and 'endpoint' in endpoints_df.columns:
@@ -1108,10 +1111,10 @@ with tab3:
     # Stored results first; a collapsible run block per validator.
     # Candidate pool = live hosts + JS endpoints (+ optional custom URLs).
     for _sub, _key, _validator, _label in [
-        (js_sub6, 'dom_xss_validation', DOMXSSValidator(CONFIG), 'DOM XSS'),
-        (js_sub7, 'cors_validation', CORSValidator(CONFIG), 'CORS'),
-        (js_sub8, 'open_redirect_validation', OpenRedirectValidator(CONFIG), 'Open Redirect'),
-        (js_sub9, 'ssrf_validation', SSRFValidator(CONFIG), 'SSRF'),
+        (js_sub5, 'dom_xss_validation', DOMXSSValidator(CONFIG), 'DOM XSS'),
+        (js_sub5, 'cors_validation', CORSValidator(CONFIG), 'CORS'),
+        (js_sub5, 'open_redirect_validation', OpenRedirectValidator(CONFIG), 'Open Redirect'),
+        (js_sub5, 'ssrf_validation', SSRFValidator(CONFIG), 'SSRF'),
     ]:
         with _sub:
             st.caption(f"Active {_label} validation - confirms candidates found by the static scanners "
@@ -1161,8 +1164,59 @@ with tab3:
                             except Exception as e:
                                 st.error(f"{_label} validation failed: {e}")
 
+    # ================= BEARER MINT (anonymous token issuance) =================
+    with js_sub6:
+        st.subheader("🪙 Bearer Mint")
+        st.caption("Hunts anonymous bearer-token minting: token-ish endpoints are POSTed "
+                   "with NO auth headers (empty body + grant styles), then with injected "
+                   "role/scope/identity claims. Minted JWTs are decoded to verify the "
+                   "injected privilege is reflected, and replayed against restricted paths. "
+                   "Every probe is one request — no brute force.")
+        bm_rows = []
+        if _has(endpoints_df) and 'endpoint' in endpoints_df.columns:
+            bm_rows = endpoints_df.to_dict('records')
+        # include live host roots as candidates too
+        live_df2 = project_manager.load_scan_results('live_hosts', target_domain)
+        if isinstance(live_df2, pd.DataFrame) and 'URL' in live_df2.columns:
+            for u in live_df2['URL'].tolist():
+                if is_valid_url(u):
+                    bm_rows.append({'endpoint': u, 'method': 'POST'})
+        bm_rows = [r for r in bm_rows if r.get('endpoint')]
+        st.caption(f"{len(bm_rows)} candidate endpoint(s) — filtered to token/auth-ish paths at scan time.")
+        if st.button("🪙 Run Bearer Mint Scan", key="run_bearer_mint"):
+            if not bm_rows:
+                st.info("No endpoints yet — run JS Analysis first.")
+            else:
+                with st.spinner("Mint-testing endpoints..."):
+                    bm_progress = st.progress(0.0, text="Starting...")
+                    try:
+                        mint_findings = bearer_mint_prober.scan(
+                            bm_rows,
+                            progress_callback=lambda p, m: bm_progress.progress(
+                                min(max(p, 0.0), 1.0), text=m))
+                        if mint_findings:
+                            bm_df = pd.DataFrame(mint_findings)
+                            project_manager.save_scan_results('bearer_mint_results', target_domain, bm_df)
+                            n_high = int((bm_df['severity'].astype(str).isin(['HIGH', 'CRITICAL'])).sum())
+                            st.error(f"🪙 {len(mint_findings)} mint finding(s) — {n_high} HIGH/CRITICAL. "
+                                     "Verify token replay manually before reporting.")
+                            st.dataframe(bm_df, use_container_width=True)
+                            st.download_button("📥 Download", bm_df.to_csv(index=False),
+                                               f"{target_domain}_bearer_mint.csv",
+                                               "text/csv", key="dl_bearer_mint")
+                        else:
+                            st.success(f"No anonymous token minting across {len(bm_rows)} endpoint(s).")
+                    except Exception as e:
+                        st.error(f"Bearer mint scan failed: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+        bm_stored = project_manager.load_scan_results('bearer_mint_results', target_domain)
+        if isinstance(bm_stored, pd.DataFrame) and not bm_stored.empty:
+            with st.expander(f"Stored Bearer Mint Findings ({len(bm_stored)})"):
+                st.dataframe(bm_stored, use_container_width=True)
+
     # ================= API KEYS (precise keyhacks corpus) =================
-    with js_sub10:
+    with js_sub7:
         st.caption("Precise API-key detection against the **streaak/keyhacks** corpus "
                    "(105 key-format regexes across 89 services). Only known key formats "
                    "for named services are flagged — no generic entropy guessing.")
