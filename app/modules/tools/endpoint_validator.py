@@ -24,6 +24,18 @@ import aiohttp
 from typing import Dict, List, Optional, Set
 from app.utils.url_utils import urlparse
 
+# ---- side-effect GET guard -------------------------------------------------
+# GET is not guaranteed non-mutating; if a path carries a mutation verb AND an
+# object identifier, auto-validation refuses to GET it and routes it to an
+# approval-aware pipeline instead.
+_MUTATION_VERB = re.compile(
+    r"(/|^)(logout|delete|remove|terminate|reset|execute|run|trigger|send|"
+    r"invite|approve|revoke|suspend|disable|enable|purge|wipe|transfer|"
+    r"update|cancel|close|apply|process|activate|deactivate|switch|"
+    r"impersonate)(/|$)", re.I)
+_ID_ISH = re.compile(r"(\{\w*id\}?|:\w*id\b|[\?&](id|user_id|account_id|"
+                     r"tenant_id|org_id|document_id|file_id|role|status)\s*=)", re.I)
+
 
 _TEMPLATE_TOKEN_RE = re.compile(r"\{[^}]+\}|:[a-zA-Z_][a-zA-Z0-9_]*(?=/|$)")
 _UUID_HINT_RE = re.compile(r"uuid|guid|token|key", re.IGNORECASE)
@@ -115,14 +127,18 @@ class EndpointValidator:
         host = host.lower()
         return any(host == h or host.endswith("." + h) for h in self.allowed_hosts)
 
-    async def _baseline(self, session: aiohttp.ClientSession, root: str) -> Dict:
-        """Request a random path per host to detect catch-all 200 pages (soft 404)."""
-        lock = self._baseline_locks.setdefault(root, asyncio.Lock())
+    async def _baseline(self, session: aiohttp.ClientSession, root: str,
+                        context: str = "") -> Dict:
+        """Request a random path per host (or per app-context) to detect
+        catch-all 200 pages (soft 404). baseline key = root + app context, so
+        routers mounted below /api are not cross-contaminated by /."""
+        key = f"{root}{context}"
+        lock = self._baseline_locks.setdefault(key, asyncio.Lock())
         async with lock:
-            if root in self._baselines:
-                return self._baselines[root]
+            if key in self._baselines:
+                return self._baselines[key]
             info = {"status": None, "length": None}
-            probe = f"{root}/{_secrets.token_hex(16)}"
+            probe = f"{root}{context}/{_secrets.token_hex(16)}"
             try:
                 async with self.sem:
                     async with session.get(probe, timeout=self.timeout,
@@ -131,7 +147,7 @@ class EndpointValidator:
                         info = {"status": resp.status, "length": len(body)}
             except Exception:
                 pass
-            self._baselines[root] = info
+            self._baselines[key] = info
             return info
 
     async def _probe(self, session: aiohttp.ClientSession, req: Dict) -> Dict:
@@ -156,10 +172,28 @@ class EndpointValidator:
             return req
 
         root = f"{parsed.scheme}://{parsed.netloc}"
-        base = await self._baseline(session, root)
+        # app-context for soft-404 baselining: first path segment (e.g. /api,
+        # /gateway) so a router mounted below /api isn't compared to the / sink.
+        app_ctx = ""
+        pseg = parsed.path.strip("/").split("/")
+        if len(pseg) >= 2:
+            app_ctx = "/" + pseg[0]
+
+        # ---- side-effect GET exclusion ----
+        # GET is not guaranteed non-mutating. When a path carries a mutation
+        # verb AND an object identifier, refuse auto-verification and route it
+        # to an approval-aware pipeline instead.
+        if _MUTATION_VERB.search(parsed.path) and _ID_ISH.search(url):
+            req.update(alive=None, live_status="requires-approval")
+            req.setdefault("suspicious_indicators", []).append(
+                "potentially_mutating_get:manual_review")
+            return req
+
+        base = await self._baseline(session, root, app_ctx)
 
         status = length = None
         allow = ""
+        redirect = None
         try:
             async with self.sem:
                 async with session.get(url, timeout=self.timeout,
@@ -167,6 +201,9 @@ class EndpointValidator:
                     body = await resp.read()
                     status, length = resp.status, len(body)
                     allow = resp.headers.get("Allow", "")
+                    loc = resp.headers.get("Location")
+                    if loc:
+                        redirect = {"status": status, "location": loc[:300]}
         except asyncio.TimeoutError:
             req.update(alive=None, live_status="timeout")
             return req
@@ -175,19 +212,30 @@ class EndpointValidator:
             return req
 
         # OPTIONS for real allowed-method enumeration (safe, non-mutating)
+        opts_allowed = None
         if not allow:
             try:
                 async with self.sem:
                     async with session.options(url, timeout=self.timeout,
                                                allow_redirects=False) as o:
                         allow = o.headers.get("Allow", "") or allow
+                        opts_allowed = allow
             except Exception:
                 pass
+        # OPTIONS-supplied Allow is a heuristic, not proof of an exploitable
+        # method - record as a medium-confidence signal, not a confirmed one.
+        req["method_signal"] = {
+            "source": ("OPTIONS" if opts_allowed else ("header" if allow else "")),
+            "allowed": [m.strip() for m in allow.split(",") if m.strip()],
+            "confidence": "medium" if opts_allowed else "low",
+        } if (opts_allowed or allow) else {}
 
         soft = self._is_soft_404(status, length, base)
         req["live_status"] = status
         req["allow_methods"] = allow
         req["soft_404"] = soft
+        if redirect:
+            req["redirect_chain"] = [redirect]
         req["alive"] = self._classify(req, status, soft)
         return req
 

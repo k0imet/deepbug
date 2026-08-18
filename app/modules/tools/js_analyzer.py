@@ -34,9 +34,11 @@ import bisect
 import asyncio
 import aiohttp
 import itertools
+import posixpath
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Union, Set, Tuple
+from urllib.parse import urlsplit
 from app.utils.url_utils import urlparse, urljoin, safe_port
 from collections import defaultdict
 import os
@@ -51,6 +53,8 @@ try:
     from app.modules.tools.js_gf_secret_scanner import JSGFSecretScanner
     from app.modules.tools.secret_fp_corpus import FalsePositiveCorpus
     from app.modules.tools.api_key_scanner import ApiKeyScanner
+    from app.modules.tools.js_semantic import JSSemanticExtractor
+    from app.modules.tools import js_security
     from app.modules.tools.endpoint_engine import (
         EndpointExtractor, SmartEndpointValidator,
         extract_sourcemap_url, unpack_sourcemap, enumerate_webpack_chunks,
@@ -64,6 +68,8 @@ except ImportError:  # pragma: no cover - streamlit pages import as `modules.too
     from modules.tools.js_gf_secret_scanner import JSGFSecretScanner
     from modules.tools.secret_fp_corpus import FalsePositiveCorpus
     from modules.tools.api_key_scanner import ApiKeyScanner
+    from modules.tools.js_semantic import JSSemanticExtractor
+    from modules.tools import js_security
     from modules.tools.endpoint_engine import (
         EndpointExtractor, SmartEndpointValidator,
         extract_sourcemap_url, unpack_sourcemap, enumerate_webpack_chunks,
@@ -470,6 +476,7 @@ class JSAnalyzer:
         self.explorer = JSApiExplorer(config)
         self.extractor = EndpointExtractor()
         self.secret_validator = SecretValidator()
+        self.semantic = JSSemanticExtractor(config)
         self.validate_enabled = config.get('js_validate_endpoints', True)
         self.deep_coverage = config.get('js_deep_coverage', True)
         self.probe_swagger = config.get('js_probe_swagger', True)
@@ -488,6 +495,10 @@ class JSAnalyzer:
         # Minified files (huge average line length) skip the AST entirely:
         # esprima is slowest exactly where it adds least.
         self.ast_skip_minified = bool(config.get('js_ast_skip_minified', True))
+        # v3.3: when minified/oversized, parse a bounded first window of the
+        # bundle instead of skipping the AST outright (structured endpoints
+        # from minified code, ~10s worst case per file).
+        self.ast_windowed = bool(config.get('js_ast_windowed', True))
         self.minified_line_len = int(config.get('js_minified_line_len', 2000))
         # regex detectors scan at most this many bytes per file
         self.scan_max_bytes = int(config.get('js_scan_max_bytes', 2_000_000))
@@ -583,18 +594,25 @@ class JSAnalyzer:
             return False
         return any(host == h or host.endswith('.' + h) for h in self.scope_hosts)
 
-    async def _download_js_async(self, session: aiohttp.ClientSession, url: str,
-                                  semaphore: asyncio.Semaphore) -> Optional[str]:
+    async def _download_js_with_info(self, session: aiohttp.ClientSession, url: str,
+                                     semaphore: asyncio.Semaphore) -> Tuple[Optional[str], Dict]:
         """
-        v3.1: oversized files are TRUNCATED rather than discarded. The old
-        behaviour threw away the main application bundle - the single most
-        endpoint-rich file on the target - purely for being large.
+        v3.3: coverage-aware download. Returns (content, info) where info is
+        the row for the js_coverage report - every fetch outcome is recorded,
+        nothing fails silently anymore.
         """
+        import time as _t
+        start = _t.monotonic()
+        info = {'url': url, 'kind': 'js', 'outcome': 'error', 'status': '',
+                'size': 0, 'ms': 0.0, 'note': ''}
         async with semaphore:
             try:
                 async with session.get(url, timeout=self.timeout) as resp:
+                    info['status'] = resp.status
                     if resp.status != 200:
-                        return None
+                        info['outcome'] = f'http_{resp.status}'
+                        info['ms'] = round((_t.monotonic() - start) * 1000, 1)
+                        return None, info
 
                     chunks = []
                     total_bytes = 0
@@ -606,14 +624,31 @@ class JSAnalyzer:
                             truncated = True
                             break
 
+                    info['size'] = total_bytes
+                    info['outcome'] = 'truncated' if truncated else 'ok'
+                    info['note'] = (f'truncated at {self.max_file_size} bytes' if truncated else '')
+                    info['ms'] = round((_t.monotonic() - start) * 1000, 1)
                     if truncated:
                         logger.info(f"Truncated to {self.max_file_size} bytes (still analyzed): {url}")
 
                     raw_bytes = b"".join(chunks)[:self.max_file_size]
-                    return raw_bytes.decode('utf-8', errors='ignore')
+                    return raw_bytes.decode('utf-8', errors='ignore'), info
+            except asyncio.TimeoutError:
+                info['outcome'] = 'timeout'
+                info['ms'] = round((_t.monotonic() - start) * 1000, 1)
+                logger.warning(f"Download timeout for {url}")
+                return None, info
             except Exception as e:
+                info['outcome'] = 'error'
+                info['note'] = f'{type(e).__name__}: {str(e)[:120]}'
+                info['ms'] = round((_t.monotonic() - start) * 1000, 1)
                 logger.debug(f"Failed async download for {url}: {e}")
-                return None
+                return None, info
+
+    async def _download_js_async(self, session: aiohttp.ClientSession, url: str,
+                                  semaphore: asyncio.Semaphore) -> Optional[str]:
+        content, _info = await self._download_js_with_info(session, url, semaphore)
+        return content
 
     def _extract_js_from_html(self, html: str, base_url: str) -> List[str]:
         js_urls = []
@@ -626,18 +661,35 @@ class JSAnalyzer:
         return js_urls
 
     async def _fetch_single_html_and_extract(self, session: aiohttp.ClientSession,
-                                              url: str) -> List[str]:
+                                              url: str) -> Tuple[List[str], Dict]:
+        """Fetch a seed URL's HTML and extract script srcs. Returns (js_urls, info)
+        where info feeds the js_coverage report (no silent host drops)."""
+        import time as _t
+        start = _t.monotonic()
+        info = {'url': url, 'kind': 'seed', 'outcome': 'html_failed', 'status': '',
+                'size': 0, 'ms': 0.0, 'note': ''}
         try:
             async with session.get(url, timeout=10) as resp:
+                info['status'] = resp.status
                 content_type = resp.headers.get('content-type', '').lower()
+                info['note'] = content_type.split(';')[0] or ''
                 if 'text/html' in content_type:
                     text = await resp.text()
-                    return self._extract_js_from_html(text, url)
+                    info['size'] = len(text)
+                    js_urls = self._extract_js_from_html(text, url)
+                    info['outcome'] = f'html_ok:{len(js_urls)}'
+                    info['ms'] = round((_t.monotonic() - start) * 1000, 1)
+                    return js_urls, info
                 elif 'javascript' in content_type or url.endswith('.js'):
-                    return [url]
+                    info['outcome'] = 'js_seed'
+                    info['ms'] = round((_t.monotonic() - start) * 1000, 1)
+                    return [url], info
         except Exception as e:
+            info['outcome'] = 'error'
+            info['note'] = f'{type(e).__name__}: {str(e)[:120]}'
             logger.debug(f"Failed pre-fetching url list target {url}: {e}")
-        return []
+        info['ms'] = round((_t.monotonic() - start) * 1000, 1)
+        return [], info
 
     # =================================================================
     # FRAMEWORK FINGERPRINTING
@@ -848,6 +900,11 @@ class JSAnalyzer:
             'total_endpoints': 0,
             'critical_endpoints': [],
             'high_endpoints': [],
+            'coverage': [],
+            'oauth_clients': [],
+            'jwt_correlation': [],
+            'service_graph': {'hosts': [], 'edges': [], 'auth_relationships': []},
+            'oidc_config': [],
         }
 
         js_urls = list(dict.fromkeys(js_urls))
@@ -870,8 +927,11 @@ class JSAnalyzer:
         # (the endpoint validator below also uses verify_ssl=False).
         _conn = aiohttp.TCPConnector(ssl=False)
         async with aiohttp.ClientSession(headers=self.headers, max_line_size=65536, max_field_size=65536, connector=_conn) as session:
-            tasks = [self._download_js_async(session, url, semaphore) for url in js_urls]
-            downloaded_contents = await asyncio.gather(*tasks)
+            tasks = [self._download_js_with_info(session, url, semaphore) for url in js_urls]
+            downloaded = await asyncio.gather(*tasks)
+            downloaded_contents = [c for c, _info in downloaded]
+            for _c, info in downloaded:
+                results['coverage'].append(info)
 
             total_files = len(js_urls)
 
@@ -944,7 +1004,9 @@ class JSAnalyzer:
                                       f"{len(results['prototype_pollution'])} proto vectors")
 
             # ============================================================
-            # SECOND PASS: fetch coverage feeders + parse specs
+            # SECOND PASS: deep-scan coverage feeders (source maps, webpack
+            # chunks) - recursive chunk-graph traversal, FULL detector set on
+            # every feeder and on unpacked original sources.
             # ============================================================
             if self.deep_coverage:
                 if self.probe_swagger:
@@ -954,49 +1016,154 @@ class JSAnalyzer:
                             if u and self._host_in_scope(u):
                                 discovered_specs.add(u)
 
-                if discovered_maps:
-                    if progress_callback:
-                        progress_callback(0.90, f"Unpacking {len(discovered_maps)} source maps...")
-                    map_urls = list(discovered_maps)
-                    map_tasks = [self._download_js_async(session, m, semaphore) for m in map_urls]
-                    for m_url, m_text in zip(map_urls, await asyncio.gather(*map_tasks)):
-                        if not m_text:
-                            continue
-                        try:
-                            _paths, pairs = unpack_sourcemap(m_text)
-                        except Exception:
-                            continue
-                        for _src, content in pairs:
-                            if not content:
+                _FEEDER_KEYS = ('secrets', 'api_keys', 'frameworks', 'proto', 'clobbing',
+                                'postmsg', 'dangerous', 'jsonp', 'rendering', 'csp',
+                                'routes', 'nonprod', 'jwts')
+
+                def _extend_feeder_findings(per, original_src=''):
+                    for key in _FEEDER_KEYS:
+                        for f in per.get(key, []):
+                            if original_src:
+                                f['original_src'] = original_src
+                            results[key].append(f)
+
+                seen_feeder_urls: Set[str] = set()
+                scanned_feeders = 0
+                max_feeders = self.max_files  # total feeder budget
+
+                async def _deep_scan_feeders(maps: Set[str], chunks: Set[str], depth: int):
+                    nonlocal scanned_feeders
+                    to_scan = []  # (kind, url, original_src, content)
+                    if maps:
+                        mt = [self._download_js_with_info(session, m, semaphore) for m in maps]
+                        for m_url, (m_text, m_info) in zip(maps, await asyncio.gather(*mt)):
+                            m_info['kind'] = 'source_map'
+                            results['coverage'].append(m_info)
+                            if not m_text:
                                 continue
                             try:
-                                extracted = await asyncio.wait_for(
-                                    asyncio.shield(loop.run_in_executor(
-                                        pool, self._extract_endpoints_from_text, content, m_url)),
-                                    timeout=self.file_timeout)
-                            except (asyncio.TimeoutError, Exception):
+                                _paths, pairs = unpack_sourcemap(m_text)
+                            except Exception:
                                 continue
-                            all_reqs.extend(extracted)
+                            for path, content in pairs:
+                                if content and content.strip():
+                                    to_scan.append(('map_source', m_url, path, content))
+                    if chunks:
+                        ct = [self._download_js_with_info(session, c, semaphore) for c in chunks]
+                        for c_url, (c_text, c_info) in zip(chunks, await asyncio.gather(*ct)):
+                            c_info['kind'] = 'chunk'
+                            results['coverage'].append(c_info)
+                            if c_text and not (self.skip_vendor and self.identify_vendor_lib(c_url)):
+                                to_scan.append(('chunk', c_url, '', c_text))
+                            else:
+                                results['vendor_skipped'] += 1
 
-                if discovered_chunks:
-                    if progress_callback:
-                        progress_callback(0.92, f"Analyzing {len(discovered_chunks)} webpack chunks...")
-                    chunk_urls = list(discovered_chunks)
-                    chunk_tasks = [self._download_js_async(session, c, semaphore) for c in chunk_urls]
-                    for c_url, c_text in zip(chunk_urls, await asyncio.gather(*chunk_tasks)):
-                        if not c_text:
-                            continue
-                        if self.skip_vendor and self.identify_vendor_lib(c_url):
-                            logger.info(f"Vendor chunk skipped: {c_url}")
-                            continue
+                    new_maps: Set[str] = set()
+                    new_chunks: Set[str] = set()
+                    for kind, url, src_path, content in to_scan:
+                        if scanned_feeders >= max_feeders:
+                            logger.warning(f"Feeder budget exhausted ({max_feeders}) - stopping deep scan")
+                            break
+                        scanned_feeders += 1
                         try:
-                            extracted = await asyncio.wait_for(
-                                asyncio.shield(loop.run_in_executor(
-                                    pool, self._extract_endpoints_from_text, c_text, c_url)),
+                            per = await asyncio.wait_for(
+                                asyncio.shield(loop.run_in_executor(pool, self._analyze_single_file, url, content)),
                                 timeout=self.file_timeout)
-                        except (asyncio.TimeoutError, Exception):
+                        except asyncio.TimeoutError:
+                            results['timed_out_files'].append(url)
                             continue
-                        all_reqs.extend(extracted)
+                        except Exception as e:
+                            logger.warning(f"Feeder analysis failed for {url}: {e}")
+                            continue
+                        if kind == 'chunk':
+                            results['js_files'].append(per['file'])
+                            results['total_js_analyzed'] += 1
+                            _extend_feeder_findings(per)
+                        else:
+                            per['file']['url'] = f"{url}#{src_path}"
+                            _extend_feeder_findings(per, original_src=src_path)
+                        all_reqs.extend(per['endpoints'])
+                        for e in per['endpoints']:
+                            e['source_url'] = url
+                            if kind == 'map_source':
+                                e['original_src'] = src_path
+                        for m in per['maps']:
+                            if self._host_in_scope(m):
+                                new_maps.add(m)
+                        for c in per['chunks']:
+                            if self._host_in_scope(c):
+                                new_chunks.add(c)
+                        if progress_callback:
+                            progress_callback(min(0.90 + scanned_feeders / (max_feeders + 1) * 0.09, 0.99),
+                                              f"Deep scan: {scanned_feeders} feeders | "
+                                              f"maps={len(new_maps)} chunks={len(new_chunks)}")
+
+                    if depth < 2 and scanned_feeders < max_feeders:
+                        new_maps = {m for m in new_maps if m not in seen_feeder_urls}
+                        new_chunks = {c for c in new_chunks if c not in seen_feeder_urls}
+                        seen_feeder_urls.update(new_maps | new_chunks)
+                        if new_maps or new_chunks:
+                            await _deep_scan_feeders(new_maps, new_chunks, depth + 1)
+
+                seen_feeder_urls.update(discovered_maps | discovered_chunks)
+                await _deep_scan_feeders(discovered_maps, discovered_chunks, 0)
+
+                # ============================================================
+                # OIDC discovery + JWKS (passive reads only)
+                # ============================================================
+                oidc_cands: Set[str] = set()
+                for ep in list(all_reqs):
+                    u = ep.get('url') or ''
+                    sigs = ep.get('security_signals') or []
+                    if ('.well-known/openid-configuration' in u) or \
+                       ('.well-known/oauth-authorization-server' in u) or \
+                       any(s == 'oidc_discovery' for s in sigs):
+                        oidc_cands.add(u)
+
+                oidc_rows = []
+                if oidc_cands:
+                    if progress_callback:
+                        progress_callback(0.95, f"OIDC discovery: {len(oidc_cands)} config(s)...")
+                    for oidc_url in list(oidc_cands)[:5]:
+                        try:
+                            async with session.get(oidc_url, timeout=15,
+                                                   allow_redirects=True) as resp:
+                                if resp.status != 200:
+                                    continue
+                                text = await resp.text(errors='ignore')
+                                try:
+                                    cfg_doc = json.loads(text)
+                                except Exception:
+                                    continue
+                            jwks_url = cfg_doc.get('jwks_uri') or \
+                                urljoin(oidc_url, '.well-known/jwks.json')
+                            keys = []
+                            try:
+                                async with session.get(jwks_url, timeout=15) as jr:
+                                    if jr.status == 200:
+                                        jd = json.loads(await jr.text(errors='ignore'))
+                                        for k in (jd.get('keys') or []):
+                                            keys.append({'kid': k.get('kid', ''),
+                                                         'alg': k.get('alg', ''),
+                                                         'kty': k.get('kty', ''),
+                                                         'use': k.get('use', '')})
+                            except Exception:
+                                pass
+                            host = urlsplit(oidc_url).netloc
+                            oidc_rows.append({
+                                'issuer': cfg_doc.get('issuer', ''),
+                                'authorization_endpoint': cfg_doc.get('authorization_endpoint', ''),
+                                'token_endpoint': cfg_doc.get('token_endpoint', ''),
+                                'userinfo_endpoint': cfg_doc.get('userinfo_endpoint', ''),
+                                'jwks_uri': cfg_doc.get('jwks_uri', ''),
+                                'host': host,
+                                'grant_types_supported': ','.join(cfg_doc.get('grant_types_supported', []) or []),
+                                'scopes_supported': ','.join(cfg_doc.get('scopes_supported', []) or [])[:200],
+                                'jwks_keys': keys,
+                            })
+                        except Exception as e:
+                            logger.debug(f"OIDC fetch failed {oidc_url}: {e}")
+                    results['oidc_config'] = oidc_rows
 
                 if discovered_specs:
                     if progress_callback:
@@ -1117,9 +1284,35 @@ class JSAnalyzer:
                 unique_secrets.append(s)
         results['secrets'] = unique_secrets
 
+        # ================================================================
+        # v3.4 SECURITY LAYER (aggregate, over the merged endpoint IR)
+        # ================================================================
+        all_eps = passthrough + to_probe
+        try:
+            results['oauth_clients'] = js_security.oauth_analysis(all_eps)
+        except Exception as e:
+            logger.warning(f"OAuth analysis failed: {e}")
+            results['oauth_clients'] = []
+        try:
+            results['jwt_correlation'] = js_security.jwt_correlation(results['jwts'], all_eps)
+        except Exception as e:
+            logger.warning(f"JWT correlation failed: {e}")
+            results['jwt_correlation'] = []
+        try:
+            results['service_graph'] = js_security.service_graph(
+                all_eps, results['jwts'], results['oauth_clients'])
+        except Exception as e:
+            logger.warning(f"Service graph build failed: {e}")
+            results['service_graph'] = {'hosts': [], 'edges': [], 'auth_relationships': []}
+        # strip full JWT tokens from the exposed results (correlation already ran)
+        for j in results['jwts']:
+            j.pop('token', None)
+
         if progress_callback:
             progress_callback(1.0, f"Done: {results['total_endpoints']} endpoints, "
-                                   f"{len(results['secrets'])} secrets")
+                                   f"{len(results['secrets'])} secrets, "
+                                   f"{len(results['oauth_clients'])} oauth clients, "
+                                   f"{len(results['jwt_correlation'])} jwt correlations")
 
         logger.info(
             f"JS scan v3.1 complete. Files: {results['total_js_analyzed']}, "
@@ -1235,7 +1428,10 @@ class JSAnalyzer:
         if (p.scheme == 'https' and port == 443) or (p.scheme == 'http' and port == 80):
             port = None
         netloc = f"{host}:{port}" if port else host
-        return (f"{netloc}{p.path}", p.scheme)
+        # Normalize dot-segments so /./a.js and /a.js are one file (and
+        # cache-busted ?v=1 / ?v=2 variants collapse to a single entry).
+        path = posixpath.normpath(p.path) if p.path else '/'
+        return (f"{netloc}{path}", p.scheme)
 
     def _dedup_js_urls(self, urls: List[str]) -> List[str]:
         """Scheme/port-aware dedup. https wins when both schemes are present."""
@@ -1352,10 +1548,25 @@ class JSAnalyzer:
         """
         api_requests = []
         avg_line = self._is_minified(content)
-        if len(content) > self.ast_max_bytes:
-            logger.debug(f"AST skipped (size {len(content)}B > {self.ast_max_bytes}B): {source_url}")
-        elif self.ast_skip_minified and avg_line > self.minified_line_len:
-            logger.debug(f"AST skipped (minified, avg line {avg_line:.0f} chars): {source_url}")
+        size_guard = len(content) > self.ast_max_bytes
+        minified_guard = self.ast_skip_minified and avg_line > self.minified_line_len
+        if size_guard or minified_guard:
+            if self.ast_windowed:
+                # v3.3: minified/oversized bundles no longer skip the AST
+                # entirely - a bounded window (first ast_max_bytes) is parsed,
+                # so minified code still yields structured endpoint calls.
+                window = content[:self.ast_max_bytes]
+                if len(window) >= 512:
+                    try:
+                        api_requests = self.explorer.analyze_js(window, source_url=source_url)
+                        logger.debug(f"Windowed AST ({len(window)}B) for "
+                                     f"{'minified' if minified_guard else 'oversized'}: {source_url}")
+                    except Exception as e:
+                        logger.warning(f"Windowed AST explorer failed for {source_url}: {e}")
+            else:
+                logger.debug(f"AST skipped (size {len(content)}B > {self.ast_max_bytes}B): {source_url}"
+                             if size_guard else
+                             f"AST skipped (minified, avg line {avg_line:.0f} chars): {source_url}")
         else:
             try:
                 api_requests = self.explorer.analyze_js(content, source_url=source_url)
@@ -1369,6 +1580,56 @@ class JSAnalyzer:
     # =================================================================
     # v3.2: SPA ROUTES / NON-PROD HOSTS / JWT / VULN LIBS
     # =================================================================
+
+    def _sem_req_to_endpoint(self, req: Dict, source_url: str) -> Optional[Dict]:
+        """Convert a js_semantic RequestIR dict into an enriched endpoint record
+        carrying security context (auth/params/body/objects/signals)."""
+        if not (req.get('url') or req.get('url_template')):
+            return None
+        url = req.get('url') or ''
+        if not url.startswith(('http://', 'https://')):
+            if (req.get('url_template') or '').startswith('${'):
+                # dynamic root - keep canonical path (e.g. /accounts/{id}/invoices)
+                url = req.get('canonical_path') or req.get('url_template') or ''
+            else:
+                url = urljoin(source_url, req.get('url_template') or req.get('canonical_path') or '')
+        auth = req.get('auth') or {}
+        ep = {
+            'url': url,
+            'source_url': source_url,
+            'method': (req.get('method') or 'GET').upper(),
+            'severity': 'info',
+            'confidence': 'medium',
+            'extraction_method': 'ast_semantic',
+            'url_template': req.get('url_template', ''),
+            'canonical_path': req.get('canonical_path', ''),
+            'content_type': req.get('content_type'),
+            'headers': req.get('headers') or {},
+            'body': req.get('body') or {},
+            'query_params': req.get('query_params') or {},
+            'path_params': req.get('path_params') or [],
+            'params': req.get('params') or [],
+            'auth': auth,
+            'websocket': bool(req.get('websocket')),
+            'file_upload': bool(req.get('file_upload')),
+            'line': (req.get('source') or {}).get('line', 0),
+            'function': (req.get('source') or {}).get('function', ''),
+            'raw': req.get('raw', ''),
+            'suspicious_indicators': [],
+        }
+        if auth.get('type'):
+            ep['auth'] = auth
+        # attach client_secret / oauth material for downstream correlation
+        body = ep.get('body') or {}
+        for k in ('client_secret', 'client_id', 'grant_type', 'audience', 'scope', 'redirect_uri'):
+            if k in body and 'client_secret' not in (ep.get('suspicious_indicators') or []):
+                pass
+        # object/tenant/ssrf classification + security signals + interest
+        ep = js_security.classify_endpoint(ep)
+        # websocket endpoint flag consumed by flatten
+        if ep.get('websocket'):
+            ep['websocket'] = True
+        return ep
 
     def _detect_spa_routes(self, js_content: str, source_url: str) -> List[Dict]:
         """Extract client-side router paths - forced-browsing candidates."""
@@ -1452,6 +1713,7 @@ class JSAnalyzer:
             findings.append({
                 'type': 'hardcoded_jwt',
                 'token_preview': token[:40] + '...',
+                'token': token,
                 'alg': header.get('alg', 'unknown'),
                 'payload_keys': ', '.join(list(payload.keys())[:8]) if payload else '',
                 'notes': '; '.join(notes),
@@ -1554,6 +1816,18 @@ class JSAnalyzer:
 
         out['endpoints'] = self._extract_endpoints_from_text(js_content, url)
 
+        # v3.4: semantic AST extraction - enriched IR (auth/params/body/objects).
+        try:
+            sem = self.semantic.extract(js_content[:self.scan_max_bytes], url)
+            out['formdata'] = sem['formdata']
+            for req in sem['requests']:
+                ep = self._sem_req_to_endpoint(req, url)
+                if ep:
+                    out['endpoints'].append(ep)
+        except Exception as e:
+            logger.warning(f"Semantic extraction failed for {url}: {e}")
+            out['formdata'] = {}
+
         # Coverage feeders (downloaded in the second pass)
         if self.deep_coverage:
             smap = extract_sourcemap_url(js_content, url)
@@ -1610,9 +1884,11 @@ class JSAnalyzer:
         all_js_urls = []
 
         _conn = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(headers=self.headers, max_line_size=65536, max_field_size=65536, connector=_conn) as session:
+        async with aiohttp.ClientSession(headers=self.headers, connector=_conn, max_line_size=65536, max_field_size=65536) as session:
             tasks = [self._fetch_single_html_and_extract(session, url) for url in urls]
-            list_of_lists = await asyncio.gather(*tasks)
+            gathered = await asyncio.gather(*tasks)
+            list_of_lists = [g[0] for g in gathered]
+            seed_coverage = [g[1] for g in gathered]
             for lst in list_of_lists:
                 all_js_urls.extend(lst)
 
@@ -1647,9 +1923,10 @@ class JSAnalyzer:
         logger.info(f"JS discovery: {len(all_js_urls)} unique JS URLs after dedup")
         if not all_js_urls:
             logger.info("No JS targets matched.")
-            return self._empty_results()
+            return self._results_to_dataframes({'coverage': seed_coverage})
 
         results = await self.analyze_js_urls_async(all_js_urls, progress_callback, validate=validate)
+        results.setdefault('coverage', []).extend(seed_coverage)
         return self._results_to_dataframes(results)
 
     def analyze_js_for_project(self, urls: List[str],
@@ -1786,6 +2063,43 @@ class JSAnalyzer:
                      if self.check_vuln_libs else [])
         vuln_libs_df = pd.DataFrame(vuln_libs)
 
+        # v3.3: coverage report - every fetch outcome, no silent drops
+        coverage_df = pd.DataFrame(results.get('coverage', []))
+        if coverage_df.empty:
+            coverage_df = pd.DataFrame(columns=[
+                'url', 'kind', 'outcome', 'status', 'size', 'ms', 'note'])
+
+        # v3.4: security frames
+        oauth_df = pd.DataFrame(results.get('oauth_clients', []))
+        if oauth_df.empty:
+            oauth_df = pd.DataFrame(columns=[
+                'host', 'endpoint', 'method', 'grant_type', 'client_id',
+                'client_secret_exposed', 'secret_component', 'audience',
+                'scopes', 'redirect_uri', 'pkce', 'source'])
+        jwt_rel_df = pd.DataFrame(results.get('jwt_correlation', []))
+        if jwt_rel_df.empty:
+            jwt_rel_df = pd.DataFrame(columns=[
+                'alg', 'issuer', 'audience', 'subject', 'azp', 'scopes',
+                'flags', 'related_hosts', 'source', 'severity_evidence'])
+        oidc_df = pd.DataFrame(results.get('oidc_config', []))
+        if oidc_df.empty:
+            oidc_df = pd.DataFrame(columns=[
+                'issuer', 'authorization_endpoint', 'token_endpoint',
+                'userinfo_endpoint', 'jwks_uri', 'host',
+                'grant_types_supported', 'scopes_supported', 'jwks_keys'])
+        sg = results.get('service_graph') or {}
+        hosts_df = pd.DataFrame(sg.get('hosts', []))
+        edges_df = pd.DataFrame(sg.get('edges', []))
+        rel_df = pd.DataFrame(sg.get('auth_relationships', []))
+        for _df, _cols in ((hosts_df, ['host', 'endpoints', 'oauth', 'accepts', 'referenced_by']),
+                           (edges_df, ['from', 'to', 'kind']),
+                           (rel_df, ['from', 'to', 'via', 'auth'])):
+            if _df.empty:
+                _df = pd.DataFrame(columns=_cols)
+        host_df = hosts_df if not hosts_df.empty else pd.DataFrame(columns=['host', 'endpoints', 'oauth', 'accepts', 'referenced_by'])
+        edge_df = edges_df if not edges_df.empty else pd.DataFrame(columns=['from', 'to', 'kind'])
+        authrel_df = rel_df if not rel_df.empty else pd.DataFrame(columns=['from', 'to', 'via', 'auth'])
+
         return {
             'js_files': js_files_df,
             'js_discovered_endpoints': endpoints_df,
@@ -1808,6 +2122,13 @@ class JSAnalyzer:
             'js_nonprod_hosts': nonprod_df,
             'js_jwts': jwts_df,
             'js_vulnerable_libs': vuln_libs_df,
+            'js_coverage': coverage_df,
+            'js_oauth_clients': oauth_df,
+            'js_jwt_correlation': jwt_rel_df,
+            'js_service_graph_hosts': host_df,
+            'js_service_graph_edges': edge_df,
+            'js_auth_relationships': authrel_df,
+            'js_oidc_config': oidc_df,
         }
 
     def _flatten_api_request(self, req: Dict) -> Dict:
@@ -1829,8 +2150,20 @@ class JSAnalyzer:
             'soft_404': req.get('soft_404', False),
             'suspicious_indicators': ', '.join(req.get('suspicious_indicators', [])),
             'query_params': json.dumps(req.get('query_params', {})),
-            'body_schema': json.dumps(req.get('body_schema', {})),
+            'body_schema': json.dumps(req.get('body', req.get('body_schema', {}))),
             'headers': json.dumps(req.get('headers', {})),
+            # v3.4 semantic enrichment
+            'url_template': req.get('url_template', ''),
+            'canonical_path': req.get('canonical_path', ''),
+            'content_type': req.get('content_type', ''),
+            'auth_type': (req.get('auth') or {}).get('type', '') if isinstance(req.get('auth'), dict) else req.get('auth', ''),
+            'auth_source': (req.get('auth') or {}).get('source', '') if isinstance(req.get('auth'), dict) else '',
+            'objects': '; '.join(f"{o.get('name')}({o.get('class')})" for o in (req.get('objects') or [])),
+            'security_signals': '; '.join(req.get('security_signals') or []),
+            'interest_score': req.get('interest_score', 0),
+            'line': req.get('line', 0),
+            'function': req.get('function', ''),
+            'file_upload': req.get('file_upload', False),
         }
 
     def _empty_results(self) -> Dict[str, pd.DataFrame]:
@@ -1841,7 +2174,10 @@ class JSAnalyzer:
                 'graphql_operation', 'websocket', 'cors_with_credentials',
                 'severity', 'confidence', 'extraction_method',
                 'alive', 'live_status', 'allow_methods', 'soft_404',
-                'suspicious_indicators', 'query_params', 'body_schema', 'headers'
+                'suspicious_indicators', 'query_params', 'body_schema', 'headers',
+                'url_template', 'canonical_path', 'content_type', 'auth_type',
+                'auth_source', 'objects', 'security_signals', 'interest_score',
+                'line', 'function', 'file_upload'
             ]),
             'js_sensitive_data_findings': pd.DataFrame(columns=[
                 'type', 'provider', 'pattern_name', 'value', 'severity',
@@ -1877,6 +2213,21 @@ class JSAnalyzer:
             'js_nonprod_hosts': pd.DataFrame(columns=['type', 'indicator', 'host', 'source', 'severity', 'note']),
             'js_jwts': pd.DataFrame(columns=['type', 'token_preview', 'alg', 'payload_keys', 'notes', 'source', 'severity']),
             'js_vulnerable_libs': pd.DataFrame(columns=['type', 'library', 'version', 'cve', 'severity', 'source']),
+            'js_coverage': pd.DataFrame(columns=['url', 'kind', 'outcome', 'status', 'size', 'ms', 'note']),
+            'js_oauth_clients': pd.DataFrame(columns=[
+                'host', 'endpoint', 'method', 'grant_type', 'client_id',
+                'client_secret_exposed', 'secret_component', 'audience',
+                'scopes', 'redirect_uri', 'pkce', 'source']),
+            'js_jwt_correlation': pd.DataFrame(columns=[
+                'alg', 'issuer', 'audience', 'subject', 'azp', 'scopes',
+                'flags', 'related_hosts', 'source', 'severity_evidence']),
+            'js_service_graph_hosts': pd.DataFrame(columns=['host', 'endpoints', 'oauth', 'accepts', 'referenced_by']),
+            'js_service_graph_edges': pd.DataFrame(columns=['from', 'to', 'kind']),
+            'js_auth_relationships': pd.DataFrame(columns=['from', 'to', 'via', 'auth']),
+            'js_oidc_config': pd.DataFrame(columns=[
+                'issuer', 'authorization_endpoint', 'token_endpoint',
+                'userinfo_endpoint', 'jwks_uri', 'host',
+                'grant_types_supported', 'scopes_supported', 'jwks_keys']),
         }
 
     @staticmethod

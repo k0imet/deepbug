@@ -865,7 +865,7 @@ _CONF_RANK = {"low": 0, "medium": 1, "high": 2}
 _EXTRACT_RANK = {
     "": 0, "string": 1, "regex": 2, "swagger-probe": 2,
     "fetch": 3, "axios": 3, "jquery": 3, "jquery.ajax": 3, "xhr": 3,
-    "sourcemap": 4, "ast": 5, "openapi": 6,
+    "sourcemap": 4, "ast": 5, "openapi": 6, "ast_semantic": 7,
 }
 
 
@@ -915,10 +915,19 @@ def _merge_pair(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     for f in ("websocket", "cors_with_credentials"):
         a[f] = a.get(f) or b.get(f)
     # dict fields: fill/union
-    for f in ("headers", "query_params", "body_schema"):
-        merged = dict(b.get(f) or {})
-        merged.update(a.get(f) or {})   # a wins on conflicts
-        a[f] = merged
+    for f in ("headers", "query_params", "body_schema", "body", "params", "path_params"):
+        merged = dict(b.get(f) or {}) if isinstance(b.get(f), dict) else (b.get(f) or [])
+        av = a.get(f)
+        if isinstance(merged, dict):
+            base = dict(b.get(f) or {})
+            base.update(a.get(f) or {})   # a wins on conflicts
+            a[f] = base
+        elif isinstance(merged, list):
+            seen2 = {json.dumps(x, sort_keys=True) for x in (av or [])}
+            for x in (merged or []):
+                if isinstance(x, dict) and json.dumps(x, sort_keys=True) not in seen2:
+                    a.setdefault(f, []).append(x)
+                    seen2.add(json.dumps(x, sort_keys=True))
     # indicators: ordered union
     seen = set(a.get("suspicious_indicators") or [])
     for ind in (b.get("suspicious_indicators") or []):
@@ -928,6 +937,25 @@ def _merge_pair(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     # body: prefer non-null
     if a.get("body") is None and b.get("body") is not None:
         a["body"] = b["body"]
+    # v3.4 semantic enrichment: propagate extras from either candidate
+    for f in ("url_template", "canonical_path", "content_type", "auth_type",
+              "auth_source", "objects", "security_signals", "interest_score",
+              "line", "function", "file_upload", "raw"):
+        av = a.get(f)
+        bv = b.get(f)
+        if not av and bv:
+            a[f] = bv
+        elif isinstance(av, list) and bv and any(bx not in av for bx in (bv if isinstance(bv, list) else [bv])):
+            for bx in (bv if isinstance(bv, list) else [bv]):
+                if bx not in av:
+                    av.append(bx)
+    # auth nested dict
+    aa = a.get("auth")
+    ba = b.get("auth")
+    if isinstance(aa, dict) and isinstance(ba, dict):
+        for k, v in ba.items():
+            if not aa.get(k) and v:
+                aa[k] = v
     return a
 
 

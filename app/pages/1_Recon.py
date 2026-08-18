@@ -771,9 +771,9 @@ with tab3:
 
     # ---- RESULTS: sub-tabbed so no single section dominates the page ----
     st.markdown("---")
-    js_sub1, js_sub2, js_sub3, js_sub4, js_sub5, js_sub6, js_sub7 = st.tabs([
+    js_sub1, js_sub2, js_sub3, js_sub4, js_sub5, js_sub6, js_sub7, js_sub8 = st.tabs([
         "📊 Overview", "🔑 Secrets & Patterns", "⚠️ Client-Side Vectors", "📂 Endpoints",
-        "🧪 Active Validation", "🪙 Bearer Mint", "🔐 API Keys"
+        "🧪 Active Validation", "🪙 Bearer Mint", "🔐 API Keys", "🧠 Security Intel"
     ])
 
     # Preload all stored frames once. Individual js_* keys are written by the
@@ -827,6 +827,27 @@ with tab3:
             st.metric("☠️ Dangerous", len(dangerous_df) if _has(dangerous_df) else 0)
         with metric_cols[3]:
             st.metric("🔑 Secrets", len(secrets_df) if _has(secrets_df) else 0)
+
+        # ---- v3.3 JS Coverage Report: every fetch outcome, nothing silent ----
+        cov_df = _load_js('js_coverage', 'js_coverage')
+        if isinstance(cov_df, pd.DataFrame) and not cov_df.empty and 'outcome' in cov_df.columns:
+            _ok = int((cov_df['outcome'] == 'ok').sum()) + int((cov_df['outcome'] == 'truncated').sum())
+            _bad = int(cov_df['outcome'].astype(str).str.startswith('http_').sum())
+            _err = int(cov_df['outcome'].astype(str).str.startswith(('error', 'timeout')).sum())
+            with st.expander(f"📡 JS Coverage Report — {len(cov_df)} fetches · {_ok} ok · {_bad} http · {_err} failed/timeout"):
+                st.caption("Seed hosts that failed HTML fetch, non-200s, timeouts and truncated "
+                           "bundles are all listed here — a gap you can see, not a silent `[]`.")
+                _cov_view = cov_df.copy()
+                if 'note' in _cov_view.columns:
+                    _cov_view['note'] = _cov_view['note'].astype(str).str[:80]
+                st.dataframe(_cov_view, use_container_width=True)
+                st.download_button("📥 Download Coverage", cov_df.to_csv(index=False),
+                                   f"{target_domain}_js_coverage.csv", "text/csv",
+                                   key="dl_js_coverage")
+        else:
+            with st.expander("📡 JS Coverage Report"):
+                st.caption("Run JS Analysis to build the coverage report (fetched/truncated/"
+                           "failed/timeout per URL, seed-level HTML results).")
 
         if _has(priority_df):
             st.markdown("#### 🔴 Priority Endpoints")
@@ -1321,6 +1342,117 @@ with tab3:
         if not _has(api_df) and 'run_api_key_scan' not in st.session_state:
             st.info("No API-key findings yet — run **JS Analysis** (now includes API-key scanning) "
                     "or use the standalone scan above.")
+
+    with js_sub8:
+        st.caption("Security-aware endpoint intelligence: authentication architecture, OAuth flows, "
+                   "JWT claims, object/tenant identifiers, service boundaries. **Signals, never "
+                   "severity — every row is evidence for manual review.**")
+
+        # ---- candidate views derived from the enriched endpoints ----
+        end_df = _load_js('js_discovered_endpoints', 'js_discovered_endpoints')
+        if isinstance(end_df, pd.DataFrame) and not end_df.empty and 'security_signals' in end_df.columns:
+            def _cand(sig):
+                mask = end_df['security_signals'].astype(str).str.contains(sig, na=False)
+                return end_df[mask] if mask.any() else None
+            c1, c2, c3, c4 = st.columns(4)
+            idor_df, ssrf_df, up_df, adm_df = _cand('idor_candidate'), _cand('ssrf_candidate'), \
+                                              _cand('file_upload'), _cand('admin_action')
+            c1.metric("🆔 IDOR candidates", len(idor_df) if idor_df is not None else 0,
+                      help="Endpoints with object-identifier path/query params")
+            c2.metric("🧐 SSRF candidates", len(ssrf_df) if ssrf_df is not None else 0,
+                      help="URL-target params (url/uri/webhook/proxy...)")
+            c3.metric("📤 Upload surfaces", len(up_df) if up_df is not None else 0)
+            c4.metric("👑 Admin actions", len(adm_df) if adm_df is not None else 0,
+                      help="Admin-path POST/PUT/PATCH/DELETE")
+
+            def _show_cand(df, title):
+                if df is None or df.empty:
+                    return
+                cols = [c for c in ('method', 'canonical_path', 'auth_type', 'content_type',
+                                    'objects', 'security_signals', 'interest_score',
+                                    'function', 'source_url') if c in df.columns]
+                with st.expander(f"{title} ({len(df)})"):
+                    st.dataframe(df[cols], use_container_width=True)
+            _show_cand(idor_df, "🆔 IDOR / multi-tenant object references")
+            _show_cand(ssrf_df, "🧐 SSRF / server-side fetch candidates")
+            _show_cand(up_df, "📤 File-upload surfaces")
+            _show_cand(adm_df, "👑 Admin action endpoints")
+        else:
+            st.info("Run JS Analysis to build the security layer.")
+
+        # ---- OAuth clients ----
+        oa = _load_js('js_oauth_clients', 'js_oauth_clients')
+        if isinstance(oa, pd.DataFrame) and not oa.empty:
+            _exp_sec = oa['client_secret_exposed'].astype(str).str.lower() == 'true'
+            with st.expander(f"🔄 OAuth Clients ({len(oa)})"):
+                cols = [c for c in ('host', 'endpoint', 'method', 'grant_type',
+                                    'client_secret_exposed', 'secret_component',
+                                    'audience', 'scopes', 'redirect_uri', 'pkce')
+                        if c in oa.columns]
+                st.dataframe(oa[cols], use_container_width=True)
+            if _exp_sec.any():
+                st.error(f"⚠️ {int(_exp_sec.sum())} OAuth client secret(s) exposed in client-side JS — "
+                         "credentials live in the browser, treat as public.")
+        else:
+            st.caption("OAuth clients: run JS Analysis.")
+
+        # ---- JWT correlation ----
+        jc = _load_js('js_jwt_correlation', 'js_jwt_correlation')
+        if isinstance(jc, pd.DataFrame) and not jc.empty:
+            with st.expander(f"🔑 JWT Correlation ({len(jc)})"):
+                st.caption("Decoded client-side JWTs correlated to endpoint hosts. Flags are "
+                           "passive observations only — no forgery, no replay.")
+                cols = [c for c in ('alg', 'issuer', 'audience', 'subject', 'scopes',
+                                    'flags', 'related_hosts', 'source') if c in jc.columns]
+                st.dataframe(jc[cols], use_container_width=True)
+        else:
+            st.caption("JWT correlation: run JS Analysis.")
+
+        # ---- OIDC config ----
+        oidc = _load_js('js_oidc_config', 'js_oidc_config')
+        if isinstance(oidc, pd.DataFrame) and not oidc.empty:
+            with st.expander(f"🌐 OIDC / JWKS ({len(oidc)})"):
+                for _, r in oidc.iterrows():
+                    st.markdown(f"**{r.get('host', '')}**"
+                                f"{' — issuer: ' + str(r.get('issuer','')) if r.get('issuer') else ''}")
+                    k = [f"`{x}`" for x in (r.get('grant_types_supported') or '').split(',') if x]
+                    if k:
+                        st.caption("grants: " + ' '.join(k))
+                    keys = r.get('jwks_keys')
+                    if isinstance(keys, list) and keys:
+                        st.caption("JWKS: " + ', '.join(
+                            f"{x.get('kid','?')}({x.get('alg','?')})" for x in keys))
+                    for fld in ('authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'jwks_uri'):
+                        v = r.get(fld)
+                        if v:
+                            st.markdown(f"- {fld}: `{v}`")
+        else:
+            st.caption("OIDC discovery: run JS Analysis.")
+
+        # ---- service graph ----
+        hosts_df2 = _load_js('js_service_graph_hosts', 'js_service_graph_hosts')
+        rel_df2 = _load_js('js_auth_relationships', 'js_auth_relationships')
+        hh = isinstance(hosts_df2, pd.DataFrame) and not hosts_df2.empty
+        rr = isinstance(rel_df2, pd.DataFrame) and not rel_df2.empty
+        if hh or rr:
+            with st.expander("🗺️ Service Graph"):
+                if hh:
+                    st.markdown("#### Hosts")
+                    cols = [c for c in ('host', 'endpoints', 'oauth', 'accepts', 'referenced_by')
+                            if c in hosts_df2.columns]
+                    st.dataframe(hosts_df2[cols], use_container_width=True)
+                if rr:
+                    st.markdown("#### Auth / cross-domain relationships")
+                    cols = [c for c in ('from', 'to', 'via', 'auth') if c in rel_df2.columns]
+                    st.dataframe(rel_df2[cols], use_container_width=True)
+                if hh:
+                    st.markdown("#### Host adjacency")
+                    st.code('\n'.join(
+                        f"{r['host'][:32]:34} -> {r['referenced_by']}"
+                        for _, r in hosts_df2.iterrows() if r.get('referenced_by')) or "(no cross-host refs)",
+                        language='text')
+        else:
+            st.caption("Service graph: run JS Analysis.")
 
 # =====================================================================
 # TAB 4: Vulnerability Detection (GF + kxss)
