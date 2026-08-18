@@ -869,7 +869,7 @@ class JSAnalyzer:
         # dev/staging subdomains and would otherwise silently zero out their JS
         # (the endpoint validator below also uses verify_ssl=False).
         _conn = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(headers=self.headers, connector=_conn) as session:
+        async with aiohttp.ClientSession(headers=self.headers, max_line_size=65536, max_field_size=65536, connector=_conn) as session:
             tasks = [self._download_js_async(session, url, semaphore) for url in js_urls]
             downloaded_contents = await asyncio.gather(*tasks)
 
@@ -1330,7 +1330,7 @@ class JSAnalyzer:
             cdx = ("https://web.archive.org/cdx/search/cdx?url=*.{h}/*"
                    "&output=text&fl=original&collapse=urlkey"
                    "&filter=original:.*\\.js(\\?|$)&limit={lim}")
-            async with aiohttp.ClientSession(headers=self.headers) as session:
+            async with aiohttp.ClientSession(headers=self.headers, max_line_size=65536, max_field_size=65536) as session:
                 for host in hosts:
                     try:
                         async with session.get(cdx.format(h=host, lim=self.max_archive_urls),
@@ -1610,7 +1610,7 @@ class JSAnalyzer:
         all_js_urls = []
 
         _conn = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(headers=self.headers, connector=_conn) as session:
+        async with aiohttp.ClientSession(headers=self.headers, max_line_size=65536, max_field_size=65536, connector=_conn) as session:
             tasks = [self._fetch_single_html_and_extract(session, url) for url in urls]
             list_of_lists = await asyncio.gather(*tasks)
             for lst in list_of_lists:
