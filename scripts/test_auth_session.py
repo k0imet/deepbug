@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from app.modules.integrations.auth_session import AuthSession, AuthError
 
 MOCK = pathlib.Path(__file__).resolve().parent.parent / '.authlab' / 'mock_auth.py'
-PORT = 9878
+PORT = 9879
 
 passed, failed = [], []
 
