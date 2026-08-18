@@ -145,6 +145,7 @@ class JSApiExplorer:
         self.http_client_patterns = self._build_http_client_patterns()
         # Cache for parsed results: {(source_url, content_hash): [requests]}
         self._parse_cache: Dict[str, List[Dict]] = {}
+        self._parse_cache_max = int((config or {}).get('js_ast_cache_max', 256))
         # Instance tracking for inter-procedural analysis
         self._instance_configs: Dict[str, Dict] = {}
         # Token stream for superagent chaining fix
@@ -226,8 +227,12 @@ class JSApiExplorer:
         # Convert to dicts for output
         result = [req.to_dict() for req in processed]
 
-        # Cache
+        # Cache - bounded (plain dict with size eviction; large scans would
+        # otherwise hold every unique bundle's AST forever)
         self._parse_cache[cache_key] = result
+        if len(self._parse_cache) > self._parse_cache_max:
+            keep = self._parse_cache_max // 2
+            self._parse_cache = dict(list(self._parse_cache.items())[-keep:])
         return result
 
     def get_source_map_url(self, js_content: str, source_url: str) -> Optional[str]:
@@ -306,11 +311,13 @@ class JSApiExplorer:
                         out.append(js_content[cursor:start])
                         out.append('')
                     elif nxt2c and nxt2.value == '(':
+                        # a?.(b) -> a(b): dropping the tokens keeps esprima
+                        # parsing (a ? (b) is invalid - missing ': alternate')
                         out.append(js_content[cursor:start])
-                        out.append('?')
+                        out.append('')
                     else:
                         out.append(js_content[cursor:start])
-                        out.append('?')          # a ? .5 : ... -> drop the dot
+                        out.append('')          # a ? .5 : ... -> a5 (parses)
                     cursor = nxt.range[1]
                     i += 2
                     changed = True

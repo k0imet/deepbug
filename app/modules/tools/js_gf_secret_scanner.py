@@ -16,6 +16,8 @@ Usage:
 """
 
 import re
+import math
+import bisect
 import json
 import logging
 from pathlib import Path
@@ -216,7 +218,6 @@ class JSGFSecretScanner:
         """Calculate Shannon entropy to filter low-entropy false positives."""
         if not data:
             return 0.0
-        import math
         entropy = 0.0
         for x in set(data):
             p_x = data.count(x) / len(data)
@@ -264,10 +265,14 @@ class JSGFSecretScanner:
         return any(ch in lowered for ch in ('${', '}', '{', 'undefined', 'null', 'true', 'false',
                                             'process.env.', 'import.meta.env.', 'window.__env__'))
 
-    def _get_line_context(self, content: str, match_start: int, match_end: int) -> Tuple[int, str]:
-        """Get line number and surrounding context for a match."""
-        lines_before = content[:match_start].count('\n')
-        line_num = lines_before + 1
+    def _get_line_context(self, content: str, match_start: int, match_end: int,
+                          line_starts: Optional[List[int]] = None) -> Tuple[int, str]:
+        """Get line number and surrounding context for a match.
+        line_starts = precomputed newline offsets -> O(log n) via bisect."""
+        if line_starts:
+            line_num = bisect.bisect_right(line_starts, match_start)
+        else:
+            line_num = content[:match_start].count('\n') + 1
 
         line_start = content.rfind('\n', 0, match_start) + 1
         line_end = content.find('\n', match_end)
@@ -331,6 +336,8 @@ class JSGFSecretScanner:
         if not js_content or len(js_content) < 10:
             return findings
 
+        line_starts = [i for i, ch in enumerate(js_content) if ch == '\n']
+
         for pattern_name, regex in self.patterns.items():
             metadata = SECRET_PATTERN_METADATA.get(pattern_name, {
                 "category": "Unknown",
@@ -354,7 +361,7 @@ class JSGFSecretScanner:
                             continue
 
                     line_num, line_context = self._get_line_context(
-                        js_content, match.start(), match.end()
+                        js_content, match.start(), match.end(), line_starts
                     )
 
                     finding = {

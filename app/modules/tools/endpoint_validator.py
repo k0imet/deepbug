@@ -19,6 +19,7 @@ and ws/wss URLs are marked unknown, not probed.
 
 import re
 import asyncio
+import copy
 import secrets as _secrets
 import aiohttp
 from typing import Dict, List, Optional, Set
@@ -37,7 +38,7 @@ _ID_ISH = re.compile(r"(\{\w*id\}?|:\w*id\b|[\?&](id|user_id|account_id|"
                      r"tenant_id|org_id|document_id|file_id|role|status)\s*=)", re.I)
 
 
-_TEMPLATE_TOKEN_RE = re.compile(r"\{[^}]+\}|:[a-zA-Z_][a-zA-Z0-9_]*(?=/|$)")
+_TEMPLATE_TOKEN_RE = re.compile(r"\{[^}]+\}|:[a-zA-Z_][a-zA-Z0-9_]*(?:\([^)]*\))?[?*]?")
 _UUID_HINT_RE = re.compile(r"uuid|guid|token|key", re.IGNORECASE)
 _GUID_BENIGN = "00000000-0000-0000-0000-000000000000"
 
@@ -272,9 +273,18 @@ class EndpointValidator:
         return None
 
     async def validate(self, endpoints: List[Dict]) -> List[Dict]:
-        conn = aiohttp.TCPConnector(limit=0, ssl=False)
+        # Connector limits prevent ephemeral-port exhaustion / WAF bans during
+        # large scans; probes must never mutate caller-owned dicts, so work on
+        # a deep copy and merge mutations back cleanly.
+        conn = aiohttp.TCPConnector(limit=max(int(getattr(self, 'global_conn_limit', 32)), 4),
+                                    limit_per_host=max(int(getattr(self, 'per_host_conn_limit', 16)), 2),
+                                    ssl=False)
+        snapshot = [copy.deepcopy(e) for e in endpoints]
         async with aiohttp.ClientSession(headers=self.headers, connector=conn) as s:
-            results = await asyncio.gather(*[self._probe(s, e) for e in endpoints])
+            results = await asyncio.gather(*[self._probe(s, e) for e in snapshot])
+        # merge probe mutations back into the original dicts (keyed by identity)
+        for orig, probed in zip(endpoints, results):
+            orig.update(probed)
         if self.drop_dead:
             return [r for r in results if r.get("alive") is not False]
         return list(results)
