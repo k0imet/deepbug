@@ -39,6 +39,14 @@ BUILTIN_PATTERNS = {
         r"['\"]([A-Z_]*(?:API_KEY|SECRET|PASSWORD|TOKEN|KEY|IV|AUTH)[A-Z_]*)['\"]\s*:\s*['\"]([^'\"]{8,})['\"]",
         re.IGNORECASE
     ),
+    "auth0-client-secret": re.compile(
+        r"auth0[^\"'\n]{0,40}client\s*_?secret\s*['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_-]{10,})['\"]",
+        re.IGNORECASE
+    ),
+    "auth0-domain": re.compile(
+        r"['\"]([a-z0-9_-]+\.auth0\.com)['\"]",
+        re.IGNORECASE
+    ),
 }
 
 # Mapping of GF pattern names to their secret categories and severity
@@ -86,6 +94,8 @@ SECRET_PATTERN_METADATA = {
     # Authentication
     "jwt": {"category": "Auth Token", "severity": "HIGH", "provider": "JWT"},
     "oauth-config": {"category": "OAuth Config", "severity": "HIGH", "provider": "Generic"},
+    "auth0-client-secret": {"category": "Auth0 Client Secret", "severity": "CRITICAL", "provider": "Auth0"},
+    "auth0-domain": {"category": "Auth0 Config", "severity": "LOW", "provider": "Auth0"},
     "http-auth": {"category": "Auth Credential", "severity": "HIGH", "provider": "HTTP"},
     "auth": {"category": "Auth Pattern", "severity": "MEDIUM", "provider": "Generic"},
 
