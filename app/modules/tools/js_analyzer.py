@@ -1170,18 +1170,29 @@ class JSAnalyzer:
                             if u and self._host_in_scope(u):
                                 discovered_specs.add(u)
 
-                _FEEDER_KEYS = ('secrets', 'api_keys', 'frameworks', 'proto', 'clobbing',
-                                'postmsg', 'dangerous', 'jsonp', 'rendering', 'csp',
-                                'routes', 'nonprod', 'jwts', 'ws_protocol',
-                                'service_workers', 'push_keys', 'ssrf_candidates',
-                                'error_services', 'auth_guards', 'taint')
+                # per-file out keys -> aggregate results keys (names differ for
+                # the legacy pattern detectors; using the raw key for all of
+                # them would KeyError the moment a feeder produced a finding)
+                _FEEDER_MAP = {
+                    'secrets': 'secrets', 'api_keys': 'api_keys',
+                    'frameworks': 'frameworks', 'proto': 'prototype_pollution',
+                    'clobbing': 'dom_clobbering', 'postmsg': 'postmessage_issues',
+                    'dangerous': 'dangerous_patterns', 'jsonp': 'jsonp_endpoints',
+                    'rendering': 'dynamic_rendering', 'csp': 'csp_gadgets',
+                    'routes': 'spa_routes', 'nonprod': 'nonprod_hosts',
+                    'jwts': 'jwts', 'ws_protocol': 'ws_protocol',
+                    'service_workers': 'service_workers', 'push_keys': 'push_keys',
+                    'ssrf_candidates': 'ssrf_candidates',
+                    'error_services': 'error_services', 'auth_guards': 'auth_guards',
+                    'taint': 'taint',
+                }
 
                 def _extend_feeder_findings(per, original_src=''):
-                    for key in _FEEDER_KEYS:
-                        for f in per.get(key, []):
+                    for src_key, dst_key in _FEEDER_MAP.items():
+                        for f in per.get(src_key, []):
                             if original_src:
                                 f['original_src'] = original_src
-                            results[key].append(f)
+                            results[dst_key].append(f)
 
                 seen_feeder_urls: Set[str] = set()
                 scanned_feeders = 0
