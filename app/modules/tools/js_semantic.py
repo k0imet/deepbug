@@ -712,6 +712,84 @@ class JSSemanticExtractor:
         req.raw = re.sub(r'\s+', ' ', node_to_string(node))[:200]
         return req
 
+    def _build_other(self, node: Dict, source_url: str, func: str) -> Optional[RequestIR]:
+        """Modern non-verb endpoint forms: dynamic import(), importScripts(),
+        serviceWorker.register, EventSource, sendBeacon, new Request,
+        window/self.fetch, axios.create({baseURL})."""
+        callee = node.get('callee', {})
+        args = node.get('arguments', [])
+        t = node.get('type')
+        line = node.get('loc', {}).get('start', {}).get('line', 0) or 0
+
+        def _mk(method, idx=0, kind=''):
+            if not args or idx >= len(args):
+                return None
+            req = RequestIR(method=method, line=line, function=func)
+            info = _build_url(args[idx], source_url)
+            if info is None:
+                return None
+            req.url_template = info['template']
+            req.url = info['url']
+            req.canonical_path = info['canonical']
+            req.path_params = info['path_params']
+            req.raw = re.sub(r'\s+', ' ', node_to_string(node))[:200]
+            return req
+
+        # dynamic import('chunk.js')  (callee type is 'Import', not Identifier)
+        if t == 'CallExpression' and callee.get('type') == 'Import':
+            return _mk('GET', 0, 'dynamic_import')
+        if t == 'CallExpression' and callee.get('type') == 'Identifier' and callee.get('name') == 'import':
+            return _mk('GET', 0, 'dynamic_import')
+        if t == 'CallExpression' and callee.get('type') == 'Identifier' and callee.get('name') == 'importScripts':
+            return _mk('GET', 0, 'import_scripts')
+        if t == 'NewExpression':
+            cname = callee.get('name') if callee.get('type') == 'Identifier' else ''
+            if cname == 'WebSocket':
+                return self._build_ws(args, source_url, func, node)
+            if cname == 'EventSource':
+                return _mk('GET', 0, 'event_stream')
+            if cname == 'Request':
+                req = _mk('GET', 0, 'request_init')
+                # new Request(url, {method})
+                if req and len(args) >= 2 and args[1].get('type') == 'ObjectExpression':
+                    for p in args[1].get('properties', []):
+                        if _expr_value(p.get('key', {})).lower() == 'method' and \
+                                p.get('value', {}).get('type') == 'Literal':
+                            req.method = str(p['value'].get('value') or req.method).upper()
+                return req
+            return None
+        if t != 'CallExpression':
+            return None
+        # serviceWorker.register(url)
+        if callee.get('type') == 'MemberExpression':
+            prop = _expr_value(callee.get('property', {}))
+            obj = _expr_value(callee.get('object', {}))
+            if prop == 'register' and 'serviceWorker' in obj:
+                return _mk('GET', 0, 'service_worker')
+            if prop == 'sendBeacon' and obj == 'navigator':
+                return _mk('POST', 0, 'beacon')
+            if prop == 'fetch' and obj in ('window', 'self'):
+                req = _mk('GET', 0, 'fetch')
+                if req and len(args) >= 2 and args[1].get('type') == 'ObjectExpression':
+                    self._apply_options(req, args[1])
+                return req
+            if prop == 'create' and obj == 'axios' and args:
+                # axios.create({baseURL}) records the API root
+                if args[0].get('type') == 'ObjectExpression':
+                    for p in args[0].get('properties', []):
+                        if _expr_value(p.get('key', {})).lower() == 'baseurl':
+                            base = p.get('value', {})
+                            req = RequestIR(method='GET', line=line, function=func)
+                            info = _build_url(base, source_url)
+                            if info is None:
+                                continue
+                            req.url_template = info.get('template', '')
+                            req.url = info.get('url', '')
+                            req.canonical_path = info.get('canonical', '')
+                            req.raw = re.sub(r'\s+', ' ', node_to_string(node))[:200]
+                            return req
+        return None
+
     def _apply_options(self, req: RequestIR, options_node: Dict) -> None:
         for p in options_node.get('properties', []):
             k = _expr_value(p.get('key', {}))
@@ -801,20 +879,23 @@ class JSSemanticExtractor:
                 return
             if t == 'CallExpression':
                 func = func_stack[-1] if func_stack else ''
-                req = self._build_request(node, source_url, func)
+                req = self._build_other(node, source_url, func)
                 if req is not None:
                     requests.append(req)
+                else:
+                    req = self._build_request(node, source_url, func)
+                    if req is not None:
+                        requests.append(req)
                 for a in node.get('arguments', []):
                     walk(a)
                 walk(node.get('callee'))
                 return
             if t == 'NewExpression':
-                # new WebSocket(url)
+                # new WebSocket(url) / new EventSource(url) / new Request(url)
                 callee = node.get('callee', {})
-                if isinstance(callee, dict) and callee.get('type') == 'Identifier' and \
-                        callee.get('name') == 'WebSocket':
+                if isinstance(callee, dict) and callee.get('type') == 'Identifier':
                     func = func_stack[-1] if func_stack else ''
-                    req = self._build_ws(node.get('arguments', []), source_url, func, node)
+                    req = self._build_other(node, source_url, func)
                     if req is not None:
                         requests.append(req)
                 for v in node.values():

@@ -39,6 +39,7 @@ import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Union, Set, Tuple
 from urllib.parse import urlsplit
+from ipaddress import ip_address, ip_network, IPv4Address, IPv6Address
 from app.utils.url_utils import urlparse, urljoin, safe_port
 from collections import defaultdict
 import os
@@ -243,9 +244,10 @@ DOM_CLOBBING_PATTERNS = [
 # ---------------------------------------------------------------------
 POSTMESSAGE_PATTERNS = [
     r'window\.addEventListener\s*\(\s*["\']message["\']\s*,\s*function\s*\([^)]{0,120}\)\s*\{[^}]{0,400}\}',
+    r'window\.addEventListener\s*\(\s*["\']message["\']\s*,\s*(?:\([^)]{0,120}\)|[A-Za-z_$][\w$]*)\s*=>\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*){0,3}\}',
     r'\.postMessage\s*\([^,]{0,200},\s*["\']\*["\']\s*\)',
     r'\.postMessage\s*\([^,]{0,200},\s*["\']https?://\*["\']\s*\)',
-    r'event\.data(?![^;]{0,300}event\.origin)',
+    r'event\.data(?!(?s:.{0,400}?event\.origin))',
 ]
 
 # ---------------------------------------------------------------------
@@ -426,7 +428,7 @@ NONPROD_HOST_PATTERNS = [
 ]
 
 # 3) JWT tokens hardcoded in JS
-JWT_PATTERN = re.compile(r'\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{0,})\b')
+JWT_PATTERN = re.compile(r'(?<![A-Za-z0-9_-])(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{0,})(?![A-Za-z0-9_-])')
 
 # 4) Vulnerable library versions (retire.js-lite). Ranges are [lo, hi).
 #    Only entries with well-established CVEs - no speculative data.
@@ -482,6 +484,15 @@ class JSAnalyzer:
         self.probe_swagger = config.get('js_probe_swagger', True)
         self.scope_hosts: Optional[Set[str]] = None
         self.gf_secret_scanner = JSGFSecretScanner(config)
+        self._inline_scripts: Dict[str, str] = {}
+        self.download_retries = int(config.get('js_download_retries', 2))
+        self.store_max_bytes = int(config.get('js_store_max_bytes', 512_000))
+        # precompile framework patterns once (500 files -> 1 compile each)
+        self._fw_compiled = [
+            (name, [re.compile(p, re.I) for p in data.get('patterns', [])],
+             re.compile(data['version_extract'], re.I) if data.get('version_extract') else None)
+            for name, data in FRAMEWORK_PATTERNS.items()
+        ]
         try:
             self.api_key_scanner = ApiKeyScanner(config)
         except Exception as e:
@@ -594,89 +605,195 @@ class JSAnalyzer:
             return False
         return any(host == h or host.endswith('.' + h) for h in self.scope_hosts)
 
+    def _host_allowed(self, url: str) -> bool:
+        """SSRF guard: refuse IP-literal hosts in private/link-local/reserved
+        ranges unless explicitly present in scope_hosts. Hostnames are allowed
+        through (DNS resolution to private space isn't attempted here)."""
+        try:
+            host = (urlsplit(url).hostname or '').strip('[]')
+        except Exception:
+            return False
+        if not host:
+            return False
+        try:
+            ip = ip_address(host)
+        except ValueError:
+            return True  # hostname
+        cgn = (ip_network('100.64.0.0/10') if isinstance(ip, IPv4Address) else None)
+        blocked = (ip.is_private or ip.is_loopback or ip.is_link_local or
+                   ip.is_reserved or ip.is_multicast or
+                   (cgn is not None and ip in cgn))
+        if not blocked:
+            return True
+        if self.scope_hosts and host in self.scope_hosts:
+            return True
+        return False
+
     async def _download_js_with_info(self, session: aiohttp.ClientSession, url: str,
                                      semaphore: asyncio.Semaphore) -> Tuple[Optional[str], Dict]:
         """
-        v3.3: coverage-aware download. Returns (content, info) where info is
-        the row for the js_coverage report - every fetch outcome is recorded,
-        nothing fails silently anymore.
+        v3.5: coverage-aware, hardened downloader.
+        - allow_redirects=False (no SSRF via redirect to internal/metadata hosts)
+        - private/link-local IP-literal hosts denied unless in scope (SSRF guard)
+        - runs from an inline <script> pseudo-url when present
+        - transient 5xx/conn-reset retried with backoff
+        Returns (content, info) where info feeds the js_coverage report.
         """
         import time as _t
         start = _t.monotonic()
         info = {'url': url, 'kind': 'js', 'outcome': 'error', 'status': '',
                 'size': 0, 'ms': 0.0, 'note': ''}
+
+        # inline <script> body staged during HTML extraction (no HTTP fetch)
+        inline = self._inline_scripts.get(url)
+        if inline is not None:
+            info.update({'outcome': 'inline', 'status': 200, 'size': len(inline),
+                         'ms': 0.0, 'note': 'inline script'})
+            return inline, info
+
+        if not self._host_allowed(url):
+            info['outcome'] = 'blocked_private_host'
+            info['note'] = 'private/link-local IP literal outside scope'
+            info['ms'] = round((_t.monotonic() - start) * 1000, 1)
+            return None, info
+
         async with semaphore:
-            try:
-                async with session.get(url, timeout=self.timeout) as resp:
-                    info['status'] = resp.status
-                    if resp.status != 200:
-                        info['outcome'] = f'http_{resp.status}'
+            attempts = self.download_retries + 1
+            for attempt in range(attempts):
+                try:
+                    async with session.get(url, timeout=self.timeout,
+                                           allow_redirects=False) as resp:
+                        info['status'] = resp.status
+                        if resp.status not in (200, 304):
+                            info['outcome'] = f'http_{resp.status}'
+                            info['ms'] = round((_t.monotonic() - start) * 1000, 1)
+                            # transient upstream errors: retry with backoff
+                            if resp.status in (500, 502, 503, 504, 429) and attempt < attempts - 1:
+                                await asyncio.sleep(0.4 * (attempt + 1))
+                                continue
+                            return None, info
+
+                        chunks = []
+                        total_bytes = 0
+                        truncated = False
+                        async for chunk in resp.content.iter_chunked(65536):
+                            chunks.append(chunk)
+                            total_bytes += len(chunk)
+                            if total_bytes >= self.max_file_size:
+                                truncated = True
+                                break
+
+                        info['size'] = total_bytes
+                        info['outcome'] = 'truncated' if truncated else 'ok'
+                        info['note'] = (f'truncated at {self.max_file_size} bytes' if truncated else '')
                         info['ms'] = round((_t.monotonic() - start) * 1000, 1)
-                        return None, info
+                        if truncated:
+                            logger.info(f"Truncated to {self.max_file_size} bytes (still analyzed): {url}")
 
-                    chunks = []
-                    total_bytes = 0
-                    truncated = False
-                    async for chunk in resp.content.iter_chunked(65536):
-                        chunks.append(chunk)
-                        total_bytes += len(chunk)
-                        if total_bytes >= self.max_file_size:
-                            truncated = True
-                            break
-
-                    info['size'] = total_bytes
-                    info['outcome'] = 'truncated' if truncated else 'ok'
-                    info['note'] = (f'truncated at {self.max_file_size} bytes' if truncated else '')
+                        raw_bytes = b"".join(chunks)[:self.max_file_size]
+                        return raw_bytes.decode('utf-8', errors='ignore'), info
+                except asyncio.TimeoutError:
+                    if attempt < attempts - 1:
+                        await asyncio.sleep(0.4 * (attempt + 1))
+                        continue
+                    info['outcome'] = 'timeout'
                     info['ms'] = round((_t.monotonic() - start) * 1000, 1)
-                    if truncated:
-                        logger.info(f"Truncated to {self.max_file_size} bytes (still analyzed): {url}")
-
-                    raw_bytes = b"".join(chunks)[:self.max_file_size]
-                    return raw_bytes.decode('utf-8', errors='ignore'), info
-            except asyncio.TimeoutError:
-                info['outcome'] = 'timeout'
-                info['ms'] = round((_t.monotonic() - start) * 1000, 1)
-                logger.warning(f"Download timeout for {url}")
-                return None, info
-            except Exception as e:
-                info['outcome'] = 'error'
-                info['note'] = f'{type(e).__name__}: {str(e)[:120]}'
-                info['ms'] = round((_t.monotonic() - start) * 1000, 1)
-                logger.debug(f"Failed async download for {url}: {e}")
-                return None, info
+                    logger.warning(f"Download timeout for {url}")
+                    return None, info
+                except (aiohttp.ClientConnectionError, ConnectionError) as e:
+                    if attempt < attempts - 1:
+                        await asyncio.sleep(0.4 * (attempt + 1))
+                        continue
+                    info['outcome'] = 'error'
+                    info['note'] = f'{type(e).__name__}: {str(e)[:120]}'
+                    info['ms'] = round((_t.monotonic() - start) * 1000, 1)
+                    logger.debug(f"Failed async download for {url}: {e}")
+                    return None, info
+                except Exception as e:
+                    info['outcome'] = 'error'
+                    info['note'] = f'{type(e).__name__}: {str(e)[:120]}'
+                    info['ms'] = round((_t.monotonic() - start) * 1000, 1)
+                    logger.debug(f"Failed async download for {url}: {e}")
+                    return None, info
+        return None, info
 
     async def _download_js_async(self, session: aiohttp.ClientSession, url: str,
                                   semaphore: asyncio.Semaphore) -> Optional[str]:
         content, _info = await self._download_js_with_info(session, url, semaphore)
         return content
 
-    def _extract_js_from_html(self, html: str, base_url: str) -> List[str]:
-        js_urls = []
-        pattern = re.compile(r'<script[^>]+src=["\x27]([^"\x27]+)["\x27]', re.I)
-        for match in pattern.finditer(html):
-            src = match.group(1)
-            full_url = urljoin(base_url, src)
-            if full_url.startswith(('http://', 'https://')):
-                js_urls.append(full_url)
-        return js_urls
+    def _extract_js_from_html(self, html: str, base_url: str) -> Tuple[List[str], List[str]]:
+        """Extract JS candidates from HTML: script src, link[rel=modulepreload/
+        preload as=script], iframe src - resolved against <base href> when
+        present. Returns (js_urls, inline_script_bodies)."""
+        js_urls: List[str] = []
+        inline: List[str] = []
+
+        base_href = base_url
+        m_base = re.search(r'<base\b[^>]*\bhref=["\x27]([^"\x27]+)["\x27]', html, re.I)
+        if m_base:
+            abs_base = urljoin(base_url, m_base.group(1))
+            if abs_base.startswith(('http://', 'https://')):
+                base_href = abs_base
+
+        def _abs(src: str):
+            full = urljoin(base_href, src)
+            return full if full.startswith(('http://', 'https://')) else ''
+
+        # <script src=...>
+        for match in re.finditer(r'<script\b[^>]*\bsrc=["\x27]([^"\x27]+)["\x27]', html, re.I):
+            u = _abs(match.group(1))
+            if u and u not in js_urls:
+                js_urls.append(u)
+        # <script>...</script> inline bodies (boot configs, secrets, endpoints)
+        for match in re.finditer(
+                r'<script\b(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script>', html, re.I | re.S):
+            body = match.group(1).strip()
+            if body and len(body) > 16 and not body.lstrip().startswith(('<', '<!--')):
+                inline.append(body)
+        # link rel=modulepreload / preload as=script
+        for match in re.finditer(
+                r'<link\b[^>]*\brel=["\x27](?:modulepreload|preload)["\x27][^>]*>', html, re.I):
+            href = re.search(r'\bhref=["\x27]([^"\x27]+)["\x27]', match.group(0), re.I)
+            if href and ('as="script"' in match.group(0) or 'as=script' in match.group(0) or
+                         'modulepreload' in match.group(0)):
+                u = _abs(href.group(1))
+                if u and u not in js_urls:
+                    js_urls.append(u)
+            elif href:
+                u = _abs(href.group(1))
+                if u and u not in js_urls:
+                    js_urls.append(u)
+        # iframe src (often loads the real SPA shell / app JS)
+        for match in re.finditer(r'<iframe\b[^>]*\bsrc=["\x27]([^"\x27]+)["\x27]', html, re.I):
+            u = _abs(match.group(1))
+            if u and u not in js_urls:
+                js_urls.append(u)
+        return js_urls, inline
 
     async def _fetch_single_html_and_extract(self, session: aiohttp.ClientSession,
                                               url: str) -> Tuple[List[str], Dict]:
         """Fetch a seed URL's HTML and extract script srcs. Returns (js_urls, info)
-        where info feeds the js_coverage report (no silent host drops)."""
+        where info feeds the js_coverage report (no silent host drops).
+        Inline <script> bodies are staged in self._inline_scripts (fetched as
+        pseudo-urls by the downloader, no HTTP round-trip)."""
         import time as _t
         start = _t.monotonic()
         info = {'url': url, 'kind': 'seed', 'outcome': 'html_failed', 'status': '',
                 'size': 0, 'ms': 0.0, 'note': ''}
         try:
-            async with session.get(url, timeout=10) as resp:
+            async with session.get(url, timeout=self.timeout, allow_redirects=False) as resp:
                 info['status'] = resp.status
                 content_type = resp.headers.get('content-type', '').lower()
                 info['note'] = content_type.split(';')[0] or ''
                 if 'text/html' in content_type:
                     text = await resp.text()
                     info['size'] = len(text)
-                    js_urls = self._extract_js_from_html(text, url)
+                    js_urls, inline = self._extract_js_from_html(text, url)
+                    for i, body in enumerate(inline):
+                        pseudo = f"{url.rstrip('/')}~inline{i}"
+                        self._inline_scripts[pseudo] = body
+                        js_urls.append(pseudo)
                     info['outcome'] = f'html_ok:{len(js_urls)}'
                     info['ms'] = round((_t.monotonic() - start) * 1000, 1)
                     return js_urls, info
@@ -697,14 +814,14 @@ class JSAnalyzer:
 
     def _detect_frameworks(self, js_content: str, source_url: str) -> List[Dict]:
         findings = []
-        for framework, data in FRAMEWORK_PATTERNS.items():
+        for framework, patterns, vext in self._fw_compiled:
             detected = False
             version = None
-            for pattern in data['patterns']:
-                if re.search(pattern, js_content, re.IGNORECASE):
+            for pat in patterns:
+                if pat.search(js_content):
                     detected = True
-                    if data.get('version_extract'):
-                        ver_match = re.search(data['version_extract'], js_content, re.IGNORECASE)
+                    if vext:
+                        ver_match = vext.search(js_content)
                         if ver_match:
                             version = ver_match.group(1)
                     break
@@ -860,7 +977,7 @@ class JSAnalyzer:
         for s in all_secrets:
             if self.fp_corpus.is_false_positive(s, source_url):
                 continue
-            key = (s.get('type', 'unknown'), s.get('value', '')[:50])
+            key = (s.get('type', 'unknown'), str(s.get('value', '')))
             if key not in seen:
                 seen.add(key)
                 unique_secrets.append(s)
@@ -874,6 +991,14 @@ class JSAnalyzer:
     async def analyze_js_urls_async(self, js_urls: List[str],
                                      progress_callback: Optional[Callable] = None,
                                      validate: Optional[bool] = None) -> Dict[str, Any]:
+        def _emit(frac, msg):
+            # a throwing UI callback (e.g. Streamlit) must never collapse the scan
+            if progress_callback:
+                try:
+                    _emit(frac, msg)
+                except Exception:
+                    pass
+
         results = {
             'js_files': [],
             'endpoints': [],
@@ -951,9 +1076,12 @@ class JSAnalyzer:
                     return None
                 try:
                     async with analysis_sem:
+                        # No shield: a per-file timeout must also cancel the
+                        # queued/started future so a pathological file can't
+                        # wedge the pool and deadlock the scan (the worker
+                        # thread is still bounded by the overall deadline).
                         return await asyncio.wait_for(
-                            asyncio.shield(
-                                loop.run_in_executor(pool, self._analyze_single_file, u, c)),
+                            loop.run_in_executor(pool, self._analyze_single_file, u, c),
                             timeout=self.file_timeout,
                         )
                 except asyncio.TimeoutError:
@@ -964,9 +1092,22 @@ class JSAnalyzer:
                     logger.warning(f"Analysis failed for {u}: {e}")
                     return None
 
-            analyses = await asyncio.gather(
-                *[_analyze_in_thread(u, c) for u, c in zip(js_urls, downloaded_contents)]
-            )
+            # Global analysis deadline: even if a pathological file wedges a
+            # worker, the scan completes with partial results instead of hanging.
+            try:
+                analyses = await asyncio.wait_for(
+                    asyncio.gather(
+                        *[_analyze_in_thread(u, c) for u, c in zip(js_urls, downloaded_contents)]
+                    ),
+                    timeout=max(int(self.config.get('js_analysis_budget',
+                                                    self.file_timeout * len(js_urls) // max(self.analysis_threads, 1) + 60)), 60),
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Overall JS analysis budget exceeded - continuing with partial results")
+                analyses = []
+                for u, info in zip(js_urls, results['coverage']):
+                    if (u, 'budget') not in results['timed_out_files']:
+                        results['timed_out_files'].append(u)
 
             for idx, per in enumerate(analyses):
                 if per is None:
@@ -995,7 +1136,7 @@ class JSAnalyzer:
                 results['nonprod_hosts'].extend(per.get('nonprod', []))
                 results['jwts'].extend(per.get('jwts', []))
                 if progress_callback and ((idx + 1) % 5 == 0 or idx + 1 == total_files):
-                    progress_callback((idx + 1) / total_files,
+                    _emit((idx + 1) / total_files,
                                       f"Analyzed {idx + 1}/{total_files} JS files | "
                                       f"{results['vendor_skipped']} vendor skipped | "
                                       f"{len(all_reqs)} endpoints | "
@@ -1035,8 +1176,19 @@ class JSAnalyzer:
                     nonlocal scanned_feeders
                     to_scan = []  # (kind, url, original_src, content)
                     if maps:
-                        mt = [self._download_js_with_info(session, m, semaphore) for m in maps]
-                        for m_url, (m_text, m_info) in zip(maps, await asyncio.gather(*mt)):
+                        # inline data: maps unpacked directly - never fetched
+                        entries = []
+                        for dm in (m for m in maps if m.startswith('data:')):
+                            info = {'url': dm[:100], 'kind': 'source_map', 'outcome': 'inline',
+                                    'status': 200, 'size': len(dm), 'ms': 0.0,
+                                    'note': 'inline data: map'}
+                            entries.append((dm, dm, info))
+                        non_data = [m for m in maps if not m.startswith('data:')]
+                        if non_data:
+                            mt = [self._download_js_with_info(session, m, semaphore) for m in non_data]
+                            for m_url, (m_text, m_info) in zip(non_data, await asyncio.gather(*mt)):
+                                entries.append((m_url, m_text, m_info))
+                        for m_url, m_text, m_info in entries:
                             m_info['kind'] = 'source_map'
                             results['coverage'].append(m_info)
                             if not m_text:
@@ -1067,7 +1219,7 @@ class JSAnalyzer:
                         scanned_feeders += 1
                         try:
                             per = await asyncio.wait_for(
-                                asyncio.shield(loop.run_in_executor(pool, self._analyze_single_file, url, content)),
+                                loop.run_in_executor(pool, self._analyze_single_file, url, content),
                                 timeout=self.file_timeout)
                         except asyncio.TimeoutError:
                             results['timed_out_files'].append(url)
@@ -1081,6 +1233,9 @@ class JSAnalyzer:
                             _extend_feeder_findings(per)
                         else:
                             per['file']['url'] = f"{url}#{src_path}"
+                            per['file']['kind'] = 'map_source'
+                            results['js_files'].append(per['file'])
+                            results['total_js_analyzed'] += 1
                             _extend_feeder_findings(per, original_src=src_path)
                         all_reqs.extend(per['endpoints'])
                         for e in per['endpoints']:
@@ -1094,7 +1249,7 @@ class JSAnalyzer:
                             if self._host_in_scope(c):
                                 new_chunks.add(c)
                         if progress_callback:
-                            progress_callback(min(0.90 + scanned_feeders / (max_feeders + 1) * 0.09, 0.99),
+                            _emit(min(0.90 + scanned_feeders / (max_feeders + 1) * 0.09, 0.99),
                                               f"Deep scan: {scanned_feeders} feeders | "
                                               f"maps={len(new_maps)} chunks={len(new_chunks)}")
 
@@ -1123,11 +1278,11 @@ class JSAnalyzer:
                 oidc_rows = []
                 if oidc_cands:
                     if progress_callback:
-                        progress_callback(0.95, f"OIDC discovery: {len(oidc_cands)} config(s)...")
+                        _emit(0.95, f"OIDC discovery: {len(oidc_cands)} config(s)...")
                     for oidc_url in list(oidc_cands)[:5]:
                         try:
                             async with session.get(oidc_url, timeout=15,
-                                                   allow_redirects=True) as resp:
+                                                   allow_redirects=False) as resp:
                                 if resp.status != 200:
                                     continue
                                 text = await resp.text(errors='ignore')
@@ -1139,7 +1294,7 @@ class JSAnalyzer:
                                 urljoin(oidc_url, '.well-known/jwks.json')
                             keys = []
                             try:
-                                async with session.get(jwks_url, timeout=15) as jr:
+                                async with session.get(jwks_url, timeout=15, allow_redirects=False) as jr:
                                     if jr.status == 200:
                                         jd = json.loads(await jr.text(errors='ignore'))
                                         for k in (jd.get('keys') or []):
@@ -1167,7 +1322,7 @@ class JSAnalyzer:
 
                 if discovered_specs:
                     if progress_callback:
-                        progress_callback(0.94, f"Parsing {len(discovered_specs)} API specs...")
+                        _emit(0.94, f"Parsing {len(discovered_specs)} API specs...")
                     spec_urls = list(discovered_specs)
                     spec_tasks = [self._download_js_async(session, s, semaphore) for s in spec_urls]
                     for s_url, s_text in zip(spec_urls, await asyncio.gather(*spec_tasks)):
@@ -1176,7 +1331,11 @@ class JSAnalyzer:
                         try:
                             spec = json.loads(s_text)
                         except Exception:
-                            continue
+                            try:
+                                import yaml
+                                spec = yaml.safe_load(s_text)
+                            except Exception:
+                                continue
                         all_reqs.extend(sanitize_endpoints(parse_openapi_spec(spec, s_url)))
 
         # Abandon any still-running analysis threads instead of joining them.
@@ -1219,7 +1378,7 @@ class JSAnalyzer:
                 passthrough.extend(overflow)
 
             if progress_callback:
-                progress_callback(0.97, f"Validating {len(to_probe)} endpoints...")
+                _emit(0.97, f"Validating {len(to_probe)} endpoints...")
             try:
                 budget = int(self.config.get('js_validate_budget', 240))
 
@@ -1227,7 +1386,7 @@ class JSAnalyzer:
                     # map validation onto the 0.97 -> 0.99 slice of the bar
                     if progress_callback:
                         try:
-                            progress_callback(0.97 + 0.02 * min(max(frac, 0.0), 1.0), msg)
+                            _emit(0.97 + 0.02 * min(max(frac, 0.0), 1.0), msg)
                         except Exception:
                             pass
 
@@ -1254,7 +1413,7 @@ class JSAnalyzer:
                 logger.warning(f"Endpoint validation failed: {e}")
 
         if progress_callback:
-            progress_callback(0.99, f"Building results ({len(passthrough) + len(to_probe)} endpoints)...")
+            _emit(0.99, f"Building results ({len(passthrough) + len(to_probe)} endpoints)...")
 
         for req in passthrough + to_probe:
             results['total_endpoints'] += 1
@@ -1274,15 +1433,26 @@ class JSAnalyzer:
             elif sev == 'high':
                 results['high_endpoints'].append(req)
 
-        # Deduplicate secrets
+        # Deduplicate secrets (full-value key so 50-char prefixes can't collide)
         seen_secrets = set()
         unique_secrets = []
         for s in results['secrets']:
-            key = (s.get('type', 'unknown'), s.get('value', '')[:50])
+            key = (s.get('type', 'unknown'), str(s.get('value', '')))
             if key not in seen_secrets:
                 seen_secrets.add(key)
                 unique_secrets.append(s)
         results['secrets'] = unique_secrets
+
+        # Deduplicate API keys (mirror of secrets pass; chunk/main dup rows)
+        if results['api_keys']:
+            seen_ak = set()
+            unique_ak = []
+            for k in results['api_keys']:
+                key = (k.get('type', ''), k.get('service', ''), str(k.get('value', '')))
+                if key not in seen_ak:
+                    seen_ak.add(key)
+                    unique_ak.append(k)
+            results['api_keys'] = unique_ak
 
         # ================================================================
         # v3.4 SECURITY LAYER (aggregate, over the merged endpoint IR)
@@ -1309,7 +1479,7 @@ class JSAnalyzer:
             j.pop('token', None)
 
         if progress_callback:
-            progress_callback(1.0, f"Done: {results['total_endpoints']} endpoints, "
+            _emit(1.0, f"Done: {results['total_endpoints']} endpoints, "
                                    f"{len(results['secrets'])} secrets, "
                                    f"{len(results['oauth_clients'])} oauth clients, "
                                    f"{len(results['jwt_correlation'])} jwt correlations")
@@ -1514,10 +1684,14 @@ class JSAnalyzer:
         if waybackurls:
             for host in hosts:
                 try:
-                    proc = await asyncio.create_subprocess_shell(
-                        f"echo {host} | {waybackurls}",
+                    # exec + stdin PIPE (never shell-interpolate host - host is
+                    # attacker-influenced and would be a command-injection sink)
+                    proc = await asyncio.create_subprocess_exec(
+                        waybackurls,
+                        stdin=asyncio.subprocess.PIPE,
                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+                    stdout, _ = await asyncio.wait_for(
+                        proc.communicate(host.encode() + b'\n'), timeout=60)
                     collected.extend(u.strip() for u in stdout.decode(errors='ignore').splitlines()
                                      if '.js' in u)
                 except Exception as e:
@@ -1798,19 +1972,28 @@ class JSAnalyzer:
                'file': {'url': url, 'size': len(js_content),
                         'size_human': self._human_readable_size(len(js_content))}}
 
-        # Persist the fetched body (capped at the scan window) so downstream
-        # scans - API keys, JWT audit, etc. - can re-run from cache instead of
-        # re-fetching. Stored under js_files results on the page.
-        out['file']['content'] = js_content[:self.scan_max_bytes]
+        # Persist the fetched body (capped at a smaller store window so the
+        # results dict can't balloon to ~1GB for 500x2MB files). The scan
+        # itself always uses the full js_content; only the cached preview is
+        # truncated. content_hash lets downstream re-scans key a disk cache.
+        out['file']['content'] = js_content[:self.store_max_bytes]
+        if js_content:
+            try:
+                out['file']['content_hash'] = hashlib.sha256(
+                    js_content.encode('utf-8', 'ignore')).hexdigest()[:16]
+                out['file']['full_size'] = len(js_content)
+            except Exception:
+                pass
 
-        # ---- Vendor fast-path ----
-        if self.skip_vendor:
-            lib = self.identify_vendor_lib(url, js_content)
-            if lib:
-                lib.update({'source': url, 'severity': 'INFO', 'type': 'vendor_lib',
-                            'size': len(js_content)})
-                out['library'] = lib
-                out['file']['vendor'] = f"{lib['library']} {lib['version']}"
+        # ---- Vendor identification (always runs so library vuln-checking and
+        # the framework report work even when vendor skipping is disabled) ----
+        lib = self.identify_vendor_lib(url, js_content)
+        if lib:
+            lib.update({'source': url, 'severity': 'INFO', 'type': 'vendor_lib',
+                        'size': len(js_content)})
+            out['library'] = lib
+            out['file']['vendor'] = f"{lib['library']} {lib['version']}"
+            if self.skip_vendor:
                 logger.info(f"Vendor JS skipped: {url} [{lib['library']} {lib['version']} | {lib['matched']}]")
                 return out
 
@@ -1831,7 +2014,7 @@ class JSAnalyzer:
         # Coverage feeders (downloaded in the second pass)
         if self.deep_coverage:
             smap = extract_sourcemap_url(js_content, url)
-            if smap and self._host_in_scope(smap):
+            if smap and (smap.startswith('data:') or self._host_in_scope(smap)):
                 out['maps'].add(smap)
             for chunk in enumerate_webpack_chunks(js_content, url):
                 if self._host_in_scope(chunk):
@@ -2155,6 +2338,7 @@ class JSAnalyzer:
             # v3.4 semantic enrichment
             'url_template': req.get('url_template', ''),
             'canonical_path': req.get('canonical_path', ''),
+            'original_src': req.get('original_src', ''),
             'content_type': req.get('content_type', ''),
             'auth_type': (req.get('auth') or {}).get('type', '') if isinstance(req.get('auth'), dict) else req.get('auth', ''),
             'auth_source': (req.get('auth') or {}).get('source', '') if isinstance(req.get('auth'), dict) else '',

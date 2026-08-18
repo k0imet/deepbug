@@ -96,7 +96,9 @@ def _iter_template_links(js: str):
     consume the real opener of the second literal.
     """
     ticks = [m.start() for m in re.finditer(r"`", js)]
-    for i in range(len(ticks) - 1):
+    # step 2: backticks pair as open/close (a0..a1..b0..b1); a sliding window
+    # would mis-segment adjacent literals (`a` + `b` -> a, +, b)
+    for i in range(0, len(ticks) - 1, 2):
         content = js[ticks[i] + 1:ticks[i + 1]]
         if not content or len(content) > 160:
             continue
