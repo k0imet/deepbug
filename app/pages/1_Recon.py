@@ -25,6 +25,7 @@ from app.modules.tools.cloud_enum import CloudScanner
 from app.modules.tools.param_miner import ParamMiner
 from app.modules.tools.cors_scanner import CORSHeadersScanner
 from app.modules.tools.graphql_scanner import GraphQLScanner
+from app.modules.tools.secret_verifier import SecretVerifier
 from app.modules.tools.live_rest_validator import LiveRestValidator
 from app.modules.tools.bearer_mint_prober import BearerMintProber
 from app.modules.tools.idor_scanner import IDORScanner
@@ -1341,7 +1342,42 @@ with tab3:
 
         if not _has(api_df) and 'run_api_key_scan' not in st.session_state:
             st.info("No API-key findings yet — run **JS Analysis** (now includes API-key scanning) "
-                    "or use the standalone scan above.")
+                     "or use the standalone scan above.")
+
+        # ---- OPT-IN live secret verification (read-only, never automatic) ----
+        with st.expander("🔎 Verify Secrets Live (OPT-IN, read-only)"):
+            st.caption("Sends extracted keys to their **own provider** with read-only/identity "
+                       "calls (GitHub GET /user, Slack auth.test, Stripe charges?limit=1, "
+                       "SendGrid scopes, Mailgun domains). **Never runs automatically**; "
+                       "keys go to the provider over TLS; results are labels, not findings.")
+            supported = {'GitHub', 'Slack', 'Stripe', 'SendGrid', 'Mailgun'}
+            if isinstance(api_df, pd.DataFrame) and not api_df.empty and 'value' in api_df.columns:
+                cand = [(r.get('service', ''), r.get('value', ''))
+                        for _, r in api_df.iterrows()
+                        if r.get('service') in supported and r.get('value')]
+                st.caption(f"{len(cand)} key(s) from supported providers ({', '.join(sorted(supported))}) are eligible.")
+                if st.button("⚡ Verify eligible keys (read-only, network egress to 5 providers)", key="verify_keys_run"):
+                    if not cand:
+                        st.warning("No eligible keys.")
+                    else:
+                        with st.spinner("Running read-only identity checks..."):
+                            try:
+                                verifier = SecretVerifier(CONFIG)
+                                rows = [{'service': s, 'value': v} for s, v in cand]
+                                results = verifier.verify_batch(rows)
+                                v_df = pd.DataFrame(results)
+                                st.dataframe(v_df, use_container_width=True)
+                                live = v_df[v_df['status'] == 'live'] if 'status' in v_df else pd.DataFrame()
+                                if not live.empty:
+                                    st.error(f"⚠️ {len(live)} **live credential(s)** confirmed — "
+                                             "report immediately, rotate, and re-check server-side exposure.")
+                                st.download_button("📥 Download verification", v_df.to_csv(index=False),
+                                                   f"{target_domain}_secret_verify.csv", "text/csv",
+                                                   key="dl_secret_verify")
+                            except Exception as e:
+                                st.error(f"Verification failed: {e}")
+            else:
+                st.info("Run JS Analysis to populate API keys first.")
 
     with js_sub8:
         st.caption("Security-aware endpoint intelligence: authentication architecture, OAuth flows, "
@@ -1407,6 +1443,59 @@ with tab3:
                 st.dataframe(jc[cols], use_container_width=True)
         else:
             st.caption("JWT correlation: run JS Analysis.")
+
+        # ---- taint + auth guards + protocol intel ----
+        tc = _load_js('js_taint_candidates', 'js_taint_candidates')
+        if isinstance(tc, pd.DataFrame) and not tc.empty:
+            with st.expander(f"🩸 DOM XSS taint candidates ({len(tc)})"):
+                st.caption("Source → sink co-occurrence (same function / proximity). "
+                           "**Candidates for manual review** — not exploitability.")
+                cols = [c for c in ('sink', 'source', 'function', 'confidence', 'line', 'context', 'source_url')
+                        if c in tc.columns]
+                st.dataframe(tc[cols], use_container_width=True)
+        else:
+            st.caption("DOM XSS taint candidates: run JS Analysis.")
+
+        gc = _load_js('js_auth_guards', 'js_auth_guards')
+        if isinstance(gc, pd.DataFrame) and not gc.empty:
+            with st.expander(f"🛡️ Client-side auth guards ({len(gc)})"):
+                st.caption("Client-side role/permission checks — **verify the API enforces them server-side** "
+                           "(classic authz-bypass lead).")
+                cols = [c for c in ('type', 'value', 'line', 'source') if c in gc.columns]
+                st.dataframe(gc[cols], use_container_width=True)
+
+        wp = _load_js('js_ws_protocol', 'js_ws_protocol')
+        if isinstance(wp, pd.DataFrame) and not wp.empty:
+            with st.expander(f"🔌 WebSocket protocol ({len(wp)})"):
+                cols = [c for c in ('type', 'event', 'line', 'source', 'severity') if c in wp.columns]
+                st.dataframe(wp[cols], use_container_width=True)
+
+        ssc = _load_js('js_ssrf_candidates', 'js_ssrf_candidates')
+        if isinstance(ssc, pd.DataFrame) and not ssc.empty:
+            with st.expander(f"🧭 SSRF / metadata candidates ({len(ssc)})"):
+                cols = [c for c in ('type', 'value', 'severity', 'confidence', 'note', 'source')
+                        if c in ssc.columns]
+                st.dataframe(ssc[cols], use_container_width=True)
+
+        esc = _load_js('js_error_services', 'js_error_services')
+        if isinstance(esc, pd.DataFrame) and not esc.empty:
+            with st.expander(f"📡 Error/infra services ({len(esc)})"):
+                st.caption("Sentry DSNs are redacted (key shape only).")
+                cols = [c for c in ('service', 'type', 'value', 'source') if c in esc.columns]
+                st.dataframe(esc[cols], use_container_width=True)
+
+        sw = _load_js('js_service_workers', 'js_service_workers')
+        pk = _load_js('js_push_keys', 'js_push_keys')
+        hsw = isinstance(sw, pd.DataFrame) and not sw.empty
+        hpk = isinstance(pk, pd.DataFrame) and not pk.empty
+        if hsw or hpk:
+            with st.expander(f"🛠️ Service workers & push ({int(hsw)*len(sw) if hsw else 0} sw / {int(hpk)*len(pk) if hpk else 0} push)"):
+                if hsw:
+                    cols = [c for c in ('type', 'value', 'note', 'source') if c in sw.columns]
+                    st.dataframe(sw[cols], use_container_width=True)
+                if hpk:
+                    cols = [c for c in ('type', 'value', 'source') if c in pk.columns]
+                    st.dataframe(pk[cols], use_container_width=True)
 
         # ---- OIDC config ----
         oidc = _load_js('js_oidc_config', 'js_oidc_config')
