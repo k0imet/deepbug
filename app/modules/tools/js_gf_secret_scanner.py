@@ -173,15 +173,26 @@ class JSGFSecretScanner:
                     with open(json_file, 'r', encoding='utf-8') as f:
                         data = json.load(f)
 
-                    if 'pattern' not in data:
+                    # tomnomnom gf format: single "pattern" string OR a list
+                    # of sub-patterns ("patterns"). The old loader silently
+                    # dropped every multi-pattern file (github_secrets, stripe,
+                    # firebase, square...) - combine them into one alternation.
+                    if 'pattern' in data:
+                        pattern_strs = [data['pattern']]
+                    elif 'patterns' in data and isinstance(data['patterns'], list):
+                        pattern_strs = [p for p in data['patterns'] if isinstance(p, str) and p.strip()]
+                    else:
+                        continue
+                    if not pattern_strs:
                         continue
 
                     flags = re.IGNORECASE
                     if data.get('flags', '').lower() == 'i':
                         flags = re.IGNORECASE
 
+                    combined = '(?:' + ')|(?:'.join(pattern_strs) + ')'
                     try:
-                        compiled = re.compile(data['pattern'], flags)
+                        compiled = re.compile(combined, flags)
                         patterns[pattern_name] = compiled
                     except re.error as e:
                         logger.warning(f"Invalid regex in {json_file.name}: {e}")
@@ -214,18 +225,44 @@ class JSGFSecretScanner:
         return entropy
 
     def _is_placeholder(self, value: str) -> bool:
-        """Check if a matched value is a placeholder or example."""
+        """Check if a matched value is a placeholder or example.
+
+        Structural prefixes (AKIA, ghp_, sk_live, ya29., xoxb-...) are real
+        credential formats - never placeholder-filtered, even if they happen
+        to contain a substring like 'example' or 'test'. Generic tokens get
+        the stricter check.
+        """
+        v = value.lower()
+        structural_prefixes = (
+            'akia', 'agpa', 'aroa', 'aida', 'asias', 'ghp_', 'gho_', 'ghu_',
+            'ghs_', 'ghr_', 'sk_live', 'sk_test', 'pk_live', 'ya29.', 'ya30.',
+            'xoxb-', 'xoxp-', 'xoxa-', 'zjxh', 'ak_mid', 'eyj', 'dvui',
+            'api_key=', 'apikey=', 'token=', 'secret=',
+        )
+        if any(v.startswith(s) for s in structural_prefixes):
+            return False
+
+        if len(value) <= 8:
+            return True
+
         placeholders = [
             'your_', 'my_', 'example', 'sample', 'test', 'demo', 'dummy',
             'placeholder', 'xxxx', 'aaaa', 'bbbb', 'cccc', 'dddd', 'eeee',
-            '1234567890', 'abcdef', '000000', '111111', '999999',
-            'insert_', 'replace_', 'change_', 'edit_',
-            'YOUR_', 'MY_', 'EXAMPLE', 'SAMPLE', 'TEST', 'DEMO',
-            'process.env.', 'import.meta.env.', 'window.__ENV__',
-            '${', '{', '}', 'undefined', 'null', 'true', 'false',
+            '1234567890', '000000', '111111', '999999',
+            'insert_', 'replace_', 'change_', 'edit_', 'changeme',
         ]
-        lower_val = value.lower()
-        return any(ph in lower_val for ph in placeholders)
+        lowered = value.lower()
+        # Only flag when a placeholder keyword dominates the token: at the
+        # start, or covering >= 40% of the length. A real secret that merely
+        # contains 'test' somewhere must not be dropped.
+        if any(lowered.startswith(ph) for ph in ('your_', 'my_', 'insert_', 'replace_', 'change_', 'edit_', 'example', 'sample', 'demo', 'test', 'dummy', 'placeholder')):
+            return True
+        for ph in placeholders:
+            idx = lowered.find(ph)
+            if idx >= 0 and len(ph) * 2.5 >= len(value):
+                return True
+        return any(ch in lowered for ch in ('${', '}', '{', 'undefined', 'null', 'true', 'false',
+                                            'process.env.', 'import.meta.env.', 'window.__env__'))
 
     def _get_line_context(self, content: str, match_start: int, match_end: int) -> Tuple[int, str]:
         """Get line number and surrounding context for a match."""
@@ -250,7 +287,17 @@ class JSGFSecretScanner:
         """Extract the actual secret value from a regex match."""
         # Try numbered groups first (most common)
         if match.lastindex and match.lastindex >= 1:
-            return match.group(1)
+            g1 = match.group(1)
+            # Some patterns anchor with a leading [^A-Z0-9] capture (e.g.
+            # aws-keys) - group(1) is then a single garbage char and we'd
+            # otherwise drop the whole CRITICAL finding. Fall back to the
+            # full match, stripped of delimiters.
+            if g1 and (len(g1) >= 4 or any(c.isalnum() for c in g1)):
+                return g1
+            raw = match.group(0)
+            val = raw.strip(' \t\n\r"\'`()[]{};,=:')
+            if val:
+                return val
 
         # Try common group names
         for group_name in ['secret', 'key', 'token', 'value', 'password', 'api_key']:
