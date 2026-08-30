@@ -144,6 +144,48 @@ if scope_manager:
                 st.markdown(f"`{'🟢 IN SCOPE' if in_scope else '🔴 OUT OF SCOPE'}`")
 
 # ---------------------------------------------------------------------
+# Bug Bounty attribution header (per-project, dynamic)
+# ---------------------------------------------------------------------
+if scope_manager:
+    _bb_current = scope_manager.get_bug_bounty_header()
+    _bb_value = list(_bb_current.values())[0] if _bb_current else ""
+    _bb_name = list(_bb_current.keys())[0] if _bb_current else "X-Bug-Bounty"
+    with st.expander(f"🏷️ Bug Bounty Header — `{_bb_name}: {_bb_value or 'not set'}`", expanded=not bool(_bb_value)):
+        st.caption("Required by some programs (e.g. Aylo: `X-Bug-Bounty: <username>` — use `sha256(username)` if non-alphanumeric). "
+                   "Stored per-project in `.bug_bounty`, injected into every scanner. Leave empty to disable.")
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            _bb_input = st.text_input("Header value (username or sha256)", value=_bb_value,
+                                      placeholder="k0imet",
+                                      key=f"bb_header_value_{current_project}",
+                                      help="Value for X-Bug-Bounty. Non-alphanumeric usernames must be sha256'd per program rules.")
+        with c2:
+            _bb_name_input = st.text_input("Header name", value=_bb_name, key=f"bb_header_name_{current_project}")
+        b1, b2 = st.columns([1, 1])
+        with b1:
+            if st.button("💾 Save header", key=f"bb_save_{current_project}"):
+                import hashlib
+                _val = _bb_input.strip()
+                _name = _bb_name_input.strip() or "X-Bug-Bounty"
+                # Auto sha256 hint if non-alphanumeric per Aylo rule
+                if _val and not _val.replace("-", "").replace("_", "").isalnum():
+                    import hashlib as _hl
+                    _hashed = _hl.sha256(_val.encode()).hexdigest()
+                    st.info(f"Non-alphanumeric detected — per program rules use sha256: `{_hashed}`")
+                if _val:
+                    scope_manager.set_bug_bounty_header(_val, _name)
+                    st.success(f"Saved `{_name}: {_val}` for project `{current_project}`")
+                else:
+                    scope_manager.set_bug_bounty_header("", _name)
+                    st.success("Cleared — no header will be sent")
+                st.rerun()
+        with b2:
+            if _bb_value:
+                st.caption(f"Active: `{_bb_name}: {_bb_value}` → all scanners")
+            else:
+                st.caption("No header — requests are unattributed")
+
+# ---------------------------------------------------------------------
 # Initialise scanners
 # ---------------------------------------------------------------------
 subdomain_scanner = SubdomainScanner(CONFIG)

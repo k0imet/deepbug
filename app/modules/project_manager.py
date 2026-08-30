@@ -194,6 +194,34 @@ class ScopeManager:
         """All hosts that are part of the scope zone (for host-suffix matching in tools)."""
         return sorted(set(self.in_scope) | set(self.wildcard_scope))
 
+    def get_bug_bounty_header(self) -> Dict[str, str]:
+        """Per-project X-Bug-Bounty header (e.g. {'X-Bug-Bounty': 'k0imet'})."""
+        hdr_file = self.project_path / ".bug_bounty"
+        if hdr_file.is_file():
+            try:
+                val = hdr_file.read_text().strip()
+                if val:
+                    # Handle both "k0imet" and "X-Bug-Bounty: k0imet" formats
+                    if ":" in val:
+                        name, value = val.split(":", 1)
+                        return {name.strip(): value.strip()}
+                    # auto sha256 if non-alphanumeric per program rules
+                    return {"X-Bug-Bounty": val}
+            except Exception:
+                pass
+        return {}
+
+    def set_bug_bounty_header(self, value: str, header_name: str = "X-Bug-Bounty") -> None:
+        hdr_file = self.project_path / ".bug_bounty"
+        try:
+            if not value or not value.strip():
+                if hdr_file.exists():
+                    hdr_file.unlink()
+            else:
+                hdr_file.write_text(f"{header_name}: {value.strip()}")
+        except Exception as e:
+            logger.error(f"Failed to save bug bounty header: {e}")
+
     def __repr__(self):
         return (f"ScopeManager(in_scope={len(self.in_scope)}, "
                 f"wildcard={len(self.wildcard_scope)}, exclusions={len(self.exclusions)})")

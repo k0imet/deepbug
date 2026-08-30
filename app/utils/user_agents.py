@@ -26,27 +26,56 @@ def _load_ua_tag() -> str:
 PROGRAM_UA_TAG = _load_ua_tag()
 
 
-def get_bug_bounty_headers() -> dict:
+def get_bug_bounty_headers(project_path: Path | None = None) -> dict:
     """Return required program attribution headers (e.g. X-Bug-Bounty).
 
-    Reads tools.bug_bounty_header / tools.custom_headers from config.json.
-    Falls back to env DEEPBUG_BUG_BOUNTY.
+    Priority:
+    1. Per-project .bug_bounty file (dynamic, set via Recon tab)
+    2. tools.bug_bounty_header / tools.custom_headers in config.json (static)
+    3. env DEEPBUG_BUG_BOUNTY
     """
+    # 1. Per-project dynamic header — check explicit path or current project
+    try:
+        if project_path is None:
+            # Try to resolve current project from projects dir
+            config_path = Path(__file__).resolve().parents[2] / 'app' / 'modules' / 'config.json'
+            if config_path.is_file():
+                cfg = json.loads(config_path.read_text())
+                base = Path(cfg.get('project_settings', {}).get('base_projects_dir', 'projects')).expanduser()
+                cur_file = base / ".current_project_name.txt"
+                if cur_file.is_file():
+                    cur_name = cur_file.read_text().strip()
+                    if cur_name:
+                        project_path = base / cur_name
+        if project_path is not None:
+            hdr_file = Path(project_path) / ".bug_bounty"
+            if hdr_file.is_file():
+                val = hdr_file.read_text().strip()
+                if val:
+                    if ":" in val:
+                        name, value = val.split(":", 1)
+                        if value.strip():
+                            return {name.strip(): value.strip()}
+                    elif val:
+                        return {"X-Bug-Bounty": val}
+    except Exception:
+        pass
+    # 2. Static config
     try:
         config_path = Path(__file__).resolve().parents[2] / 'app' / 'modules' / 'config.json'
         if config_path.is_file():
             cfg = json.loads(config_path.read_text())
             tools = cfg.get('tools', {})
-            # explicit bug bounty header
             if 'bug_bounty_header' in tools and isinstance(tools['bug_bounty_header'], dict):
                 hdr = tools['bug_bounty_header']
                 name = hdr.get('name', 'X-Bug-Bounty')
                 value = hdr.get('value', '')
                 if value:
                     return {name: value}
-            # generic custom headers
             if 'custom_headers' in tools and isinstance(tools['custom_headers'], dict):
-                return {str(k): str(v) for k, v in tools['custom_headers'].items() if v}
+                headers = {str(k): str(v) for k, v in tools['custom_headers'].items() if v}
+                if headers:
+                    return headers
     except Exception:
         pass
     env_val = os.environ.get('DEEPBUG_BUG_BOUNTY', '')
