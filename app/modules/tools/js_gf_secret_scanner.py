@@ -147,6 +147,7 @@ class JSGFSecretScanner:
         gf_dir_path = config.get('tools', {}).get('paths', {}).get('gf_patterns', '~/.gf')
         self.gf_dir = Path(gf_dir_path).expanduser()
         self.patterns = self._load_secret_patterns()
+        self.max_matches = int(config.get('js_max_matches', 30))
 
         # Entropy threshold for filtering low-entropy false positives
         self.min_entropy = config.get('js_secret_scanner', {}).get('min_entropy', 3.5)
@@ -290,7 +291,13 @@ class JSGFSecretScanner:
 
     def _extract_match_value(self, match: re.Match, pattern_name: str) -> Optional[str]:
         """Extract the actual secret value from a regex match."""
-        # Try numbered groups first (most common)
+        if pattern_name == 'webpack_define_plugin':
+            if match.lastindex and match.lastindex >= 2:
+                val = match.group(2)
+                if val:
+                    return val
+            return match.group(0)
+
         if match.lastindex and match.lastindex >= 1:
             g1 = match.group(1)
             # Some patterns anchor with a leading [^A-Z0-9] capture (e.g.
@@ -345,7 +352,11 @@ class JSGFSecretScanner:
                 "provider": "Unknown"
             })
 
+            count = 0
             for match in regex.finditer(js_content):
+                count += 1
+                if count > self.max_matches:
+                    break
                 try:
                     matched_value = self._extract_match_value(match, pattern_name)
                     if not matched_value or len(matched_value) < 4:
@@ -353,6 +364,13 @@ class JSGFSecretScanner:
 
                     if self._is_placeholder(matched_value):
                         continue
+
+                    # webpack DefinePlugin keys are often i18n keys, not secrets:
+                    # 'reset_api_key' -> translation text. A real key value never
+                    # contains spaces and is never pure lower snake_case words.
+                    if pattern_name == 'webpack_define_plugin':
+                        if ' ' in matched_value or re.fullmatch(r'[a-z_]+', matched_value):
+                            continue
 
                     # Entropy check for token-like values
                     if len(matched_value) >= 16:

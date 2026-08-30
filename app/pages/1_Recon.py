@@ -53,6 +53,7 @@ from app.modules.tools.bypass_403 import Bypass403Engine
 from app.modules.tools.github_leak_scanner import GitHubLeakScanner
 from app.modules.tools.classifier import classify_and_rank
 from app.modules.tools.secret_chainer import SecretChainer
+from app.modules.tools.cookie_bomb_scanner import CookieBombScanner, TRACKING_PARAMS
 from app.modules.recon import Reconnaissance
 
 from app.utils.ui_helpers import render_df, analysis_result
@@ -180,6 +181,8 @@ secret_chainer = SecretChainer(CONFIG)
 # Host-gate the JS downloader with the project's scope rules when configured
 # (wildcards + explicit in-scope), falling back to the target domain.
 js_analyzer.scope_hosts = set(scope_manager.get_scope_hosts()) if (scope_manager and (scope_manager.in_scope or scope_manager.wildcard_scope)) else {target_domain}
+cookie_bomb_scanner = CookieBombScanner(CONFIG)
+cookie_bomb_scanner.scope_hosts = set(scope_manager.get_scope_hosts()) if (scope_manager and (scope_manager.in_scope or scope_manager.wildcard_scope)) else {target_domain}
 
 # Diagnostic: shows which subdomain_scanner.py is actually loaded (stale-import detector)
 import app.modules.tools.subdomain_scanner as _sd_mod
@@ -236,7 +239,7 @@ with st.expander("🚀 Full Recon (one-click pipeline)"):
 # ---------------------------------------------------------------------
 # CONSOLIDATED TABS (8 instead of 12)
 # ---------------------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "🌐 Subdomain & Takeover",
     "🔌 Port & Service Scan",
     "📜 JavaScript Analysis",
@@ -244,7 +247,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "☁️ Cloud & Infra",
     "🔑 Parameter Mining",
     "🛡️ Security Headers",
-    "🧬 Advanced Scans"
+    "🧬 Advanced Scans",
+    "🍪 Cookie Bomb",
 ])
 
 # =====================================================================
@@ -691,7 +695,7 @@ with tab3:
     if not urls:
         urls = [f"https://{target_domain}", f"http://{target_domain}"]
 
-    st.info(f"Analyzing {len(urls)} URLs with v3.0 engine (framework detection, prototype pollution, DOM clobbering, postMessage analysis, dangerous patterns, JSONP, dynamic rendering, CSP gadgets).")
+    st.info(f"Analyzing {len(urls)} URLs with v3.0 engine (endpoint discovery, secrets, framework detection, prototype pollution, postMessage analysis, dangerous patterns).")
 
     btn_cols = st.columns([2, 2, 3])
     run_js = btn_cols[0].button("📜 Run JS Analysis", key="run_js",
@@ -740,9 +744,12 @@ with tab3:
                 results = js_analyzer.analyze_js_for_project(urls, progress_callback=lambda p, m: progress.progress(p, m), validate=False)
                 saved = False
                 for key, df in results.items():
-                    if isinstance(df, pd.DataFrame) and not df.empty:
-                        project_manager.save_scan_results(key, target_domain, df)
-                        saved = True
+                    if isinstance(df, pd.DataFrame):
+                        # Persist empty frames too: otherwise a clean re-scan
+                        # leaves stale findings from the previous run on disk.
+                        project_manager.save_scan_results(
+                            key, target_domain, df, persist_empty=True)
+                        saved = saved or not df.empty
                 if saved:
                     # Build summary
                     total_endpoints = len(results.get('js_discovered_endpoints', pd.DataFrame()))
@@ -751,17 +758,14 @@ with tab3:
                     api_keys = len(results.get('js_api_keys', pd.DataFrame()))
                     frameworks = len(results.get('js_frameworks', pd.DataFrame()))
                     proto = len(results.get('js_prototype_pollution', pd.DataFrame()))
-                    clobber = len(results.get('js_dom_clobbering', pd.DataFrame()))
                     postmsg = len(results.get('js_postmessage_issues', pd.DataFrame()))
                     dangerous = len(results.get('js_dangerous_patterns', pd.DataFrame()))
-                    jsonp = len(results.get('js_jsonp_endpoints', pd.DataFrame()))
 
                     st.success(
                         f"JS v3.0 complete! 🎯 {total_endpoints} endpoints | "
                         f"🔴 {critical} critical | 🔑 {secrets} secrets | 🔐 {api_keys} API keys | "
                         f"📦 {frameworks} frameworks | ⚠️ {proto} proto vectors | "
-                        f"🌊 {clobber} clobbering | 📨 {postmsg} postMessage | "
-                        f"☠️ {dangerous} dangerous | 🔗 {jsonp} JSONP"
+                        f"📨 {postmsg} postMessage | ☠️ {dangerous} dangerous"
                     )
                 else:
                     st.info("No JS findings.")
@@ -803,11 +807,7 @@ with tab3:
     dangerous_df = _load_js('js_dangerous_patterns', 'js_dangerous_patterns')
     secrets_df = _load_js('js_sensitive_data_findings', 'js_sensitive_data_findings')
     priority_df = _load_js('js_priority_endpoints', 'js_priority_endpoints')
-    clobber_df = _load_js('js_dom_clobbering', 'js_dom_clobbering')
     postmsg_df = _load_js('js_postmessage_issues', 'js_postmessage_issues')
-    jsonp_df = _load_js('js_jsonp_endpoints', 'js_jsonp_endpoints')
-    rendering_df = _load_js('js_dynamic_rendering', 'js_dynamic_rendering')
-    csp_df = _load_js('js_csp_gadgets', 'js_csp_gadgets')
     endpoints_df = _load_js('js_discovered_endpoints', 'js_discovered_endpoints')
     graphql_df = _load_js('js_graphql_endpoints', 'js_graphql_endpoints')
     ws_df = _load_js('js_websocket_endpoints', 'js_websocket_endpoints')
@@ -951,21 +951,7 @@ with tab3:
                 st.bar_chart(dangerous_df['pattern_name'].value_counts())
             st.dataframe(dangerous_df, use_container_width=True)
 
-        if _has(jsonp_df):
-            st.markdown("#### 🔗 JSONP Endpoints")
-            st.info("May be vulnerable to XSS via callback manipulation.")
-            st.dataframe(jsonp_df, use_container_width=True)
-
-        if _has(rendering_df):
-            st.markdown("#### 🎭 Dynamic Rendering")
-            st.warning("Dynamic rendering engine detected - check for SSRF via headless browser endpoints.")
-            st.dataframe(rendering_df, use_container_width=True)
-
-        if _has(csp_df):
-            st.markdown("#### 🔓 CSP Gadgets")
-            st.dataframe(csp_df, use_container_width=True)
-
-        if not any(_has(d) for d in (secrets_df, dangerous_df, jsonp_df, rendering_df, csp_df)):
+        if not any(_has(d) for d in (secrets_df, dangerous_df)):
             st.info("No secrets or dangerous patterns found yet.")
 
     # ================= CLIENT-SIDE VECTORS =================
@@ -978,17 +964,12 @@ with tab3:
                 st.caption(f"Pattern: {row.get('pattern', '')}")
             st.dataframe(proto_df, use_container_width=True)
 
-        if _has(clobber_df):
-            st.markdown("#### 🌊 DOM Clobbering")
-            st.warning("Named properties may override JS variables.")
-            st.dataframe(clobber_df, use_container_width=True)
-
         if _has(postmsg_df):
             st.markdown("#### 📨 PostMessage Issues")
             st.error("🚨 Handlers without `event.origin` validation - cross-origin data theft risk.")
             st.dataframe(postmsg_df, use_container_width=True)
 
-        if not any(_has(d) for d in (proto_df, clobber_df, postmsg_df)):
+        if not any(_has(d) for d in (proto_df, postmsg_df)):
             st.info("No client-side vectors found yet.")
 
     # ================= ENDPOINTS =================
@@ -2725,3 +2706,157 @@ with tab8:
                         st.info("Nothing to classify.")
                 except Exception as e:
                     st.error(f"Endpoint classification failed: {e}")
+
+# =====================================================================
+# TAB 9: Cookie Bomb (analytics -> Set-Cookie self-DoS)
+# =====================================================================
+with tab9:
+    st.subheader(f"🍪 Cookie Bomb Lab: `{target_domain}`")
+    st.caption("Passive analytics fingerprint + cookie-sink detection, plus a single-request manual probe lab. "
+               "The classic Kazmi pattern: `?gclid=AAAA*4000` echoed into `Set-Cookie` without truncation → "
+               "browser replays oversized `Cookie:` on every request → `400/431`. Scope + private-IP gated.")
+
+    live_urls_cb: list[str] = []
+    _ldf = project_manager.load_scan_results('live_hosts', target_domain)
+    if isinstance(_ldf, pd.DataFrame) and not _ldf.empty and 'URL' in _ldf.columns:
+        live_urls_cb = [u for u in _ldf['URL'].dropna().astype(str).tolist() if is_valid_url(u)]
+    if not live_urls_cb:
+        live_urls_cb = [f"https://{target_domain}", f"http://{target_domain}"]
+    live_urls_cb = project_manager.filter_targets_by_scope(live_urls_cb)
+    st.caption(f"Pool: **{len(live_urls_cb)}** in-scope URL(s) from `live_hosts` (fallback seed if empty).")
+
+    # --- Bulk detection ---
+    cb_left, cb_right = st.columns([1, 3])
+    with cb_left:
+        do_cb_scan = st.button("🔍 Scan for analytics & sinks", type="primary", key="cb_bulk_scan_tab9")
+    with cb_right:
+        st.caption("Saves `cookie_bomb_analytics` + `cookie_bomb_sinks`. Re-run anytime; stale rows overwritten.")
+
+    if do_cb_scan:
+        with st.spinner(f"Scanning {len(live_urls_cb)} URL(s)..."):
+            prog = st.progress(0.0, text="Starting...")
+            try:
+                res = cookie_bomb_scanner.scan_sync(
+                    live_urls_cb, progress_callback=lambda p, m: prog.progress(min(max(p, 0.0), 1.0), text=m))
+                analytics_df = pd.DataFrame(res.get("analytics", []))
+                sinks_df = pd.DataFrame(res.get("sinks", []))
+                if not analytics_df.empty:
+                    project_manager.save_scan_results("cookie_bomb_analytics", target_domain, analytics_df, persist_empty=True)
+                else:
+                    project_manager.save_scan_results("cookie_bomb_analytics", target_domain,
+                                                      pd.DataFrame(columns=["url", "provider", "evidence", "confidence"]),
+                                                      persist_empty=True)
+                if not sinks_df.empty:
+                    project_manager.save_scan_results("cookie_bomb_sinks", target_domain, sinks_df, persist_empty=True)
+                else:
+                    project_manager.save_scan_results("cookie_bomb_sinks", target_domain,
+                                                      pd.DataFrame(columns=["url", "source_url", "sink", "confidence", "context"]),
+                                                      persist_empty=True)
+                prog.progress(1.0, text="Done.")
+                st.success(f"Done — {len(analytics_df)} analytics hits, {len(sinks_df)} sink(s).")
+            except Exception as e:
+                st.error(f"Scan failed: {e}")
+                import traceback; st.code(traceback.format_exc()[:3000])
+
+    for _k, _label in [("cookie_bomb_analytics", "📊 Analytics detected"),
+                       ("cookie_bomb_sinks", "🍪 Cookie sinks (`document.cookie` ← query param)")]:
+        _df = project_manager.load_scan_results(_k, target_domain)
+        if isinstance(_df, pd.DataFrame) and not _df.empty:
+            st.markdown(f"**{_label} — {len(_df)}**")
+            st.dataframe(_df, use_container_width=True)
+            st.download_button(f"📥 {_label}", _df.to_csv(index=False),
+                               f"{target_domain}_{_k}.csv", "text/csv", key=f"dl_{_k}_tab9")
+        else:
+            st.caption(f"No saved `{_k}` — run the scan above.")
+
+    with st.expander("ℹ️ How to read this"):
+        st.markdown("""
+- **Analytics** — provider inferred from `<script src>` / inline markers. Presence means the marketing param is *likely* handled.
+- **Sink `high`** — `document.cookie=` within ~800 chars of a `location.search` / `URLSearchParams.get("gclid"|"utm_*"|…)` read in the same file. That's the Kazmi sink.
+- No sink ≠ safe — server-side `Set-Cookie` from query param won't appear in JS. Use the probe lab below to confirm.
+""")
+
+    st.markdown("---")
+    st.subheader("🧪 Manual Probe Lab")
+    st.markdown("**Active — one request at a time.** Builds `?<param>=<payload>` and checks `Set-Cookie` reflection, then replays the cookie.")
+    st.warning("Sends an oversized cookie to the target. Prefer your own session / staging hosts. Single-shot by design.")
+
+    _opts = live_urls_cb[:50] + ["— custom —"]
+    _chosen = st.selectbox("Probe URL:", _opts, key="cb_manual_url_tab9")
+    if _chosen == "— custom —":
+        probe_url = st.text_input("Custom URL (must be in scope):", placeholder=f"https://{target_domain}/",
+                                  key="cb_custom_url_tab9").strip()
+    else:
+        probe_url = (_chosen or "").strip()
+
+    _c1, _c2, _c3 = st.columns([2, 1, 1])
+    with _c1:
+        _param = st.selectbox("Tracking param:", TRACKING_PARAMS + ["— custom —"], key="cb_param_tab9")
+        if _param == "— custom —":
+            _param = st.text_input("Custom param:", key="cb_param_custom_tab9").strip() or "gclid"
+    with _c2:
+        _size = st.slider("Payload bytes:", 500, 16000, 4000, step=500, key="cb_size_tab9")
+    with _c3:
+        _char = st.selectbox("Char:", list("AX01-_"), key="cb_char_tab9")
+
+    if probe_url:
+        _sep = "&" if "?" in probe_url else "?"
+        st.caption(f"Preview: `{probe_url[:60]}{_sep}{_param}={_char*8}…`")
+
+    do_probe = st.button("🧪 Probe", type="primary", key="cb_probe_tab9", disabled=not probe_url)
+    if do_probe:
+        if not probe_url:
+            st.error("Enter a URL.")
+        elif scope_manager and not scope_manager.is_in_scope(probe_url):
+            st.error(f"🚫 {probe_url} is out of scope.")
+        else:
+            with st.spinner(f"Probing {_param}={_char}*{_size} ..."):
+                try:
+                    _res = cookie_bomb_scanner.probe_sync(probe_url, param=_param, size=_size, char=_char)
+                    _hist = project_manager.load_scan_results("cookie_bomb_probes", target_domain)
+                    _row = pd.DataFrame([{
+                        "url": _res.get("url", ""), "param": _res.get("param", ""),
+                        "size": _res.get("size", 0), "verdict": _res.get("verdict", ""),
+                        "reflected": _res.get("reflected", False),
+                        "follow_status": _res.get("follow_status", ""),
+                        "set_cookie": "; ".join(_res.get("set_cookie", [])[:2])[:800],
+                        "probe_url": _res.get("probe_url", "")[:400],
+                    }])
+                    if isinstance(_hist, pd.DataFrame) and not _hist.empty:
+                        _hist = pd.concat([_hist, _row], ignore_index=True)
+                    else:
+                        _hist = _row
+                    project_manager.save_scan_results("cookie_bomb_probes", target_domain, _hist, persist_empty=True)
+
+                    _v = _res.get("verdict", "")
+                    if _v == "likely_vulnerable":
+                        st.error(f"🔴 **{_v}** — reflected and follow-up { _res.get('follow_status')} (self-DoS).")
+                    elif _v == "reflected_no_dos":
+                        st.warning(f"🟡 **{_v}** — reflected but follow-up not 4xx (try larger size / combine params).")
+                    elif _v == "not_vulnerable":
+                        st.success("🟢 **not_vulnerable** — no oversized Set-Cookie reflection.")
+                    elif _v == "blocked_scope":
+                        st.error(f"🚫 {_v}: {_res.get('evidence','')}")
+                    else:
+                        st.info(f"**{_v}**")
+                    st.json({k: v for k, v in _res.items() if k != "probe_url"})
+                    if _res.get("set_cookie"):
+                        st.markdown("**Set-Cookie:**")
+                        for _sc in _res["set_cookie"]:
+                            st.code(_sc[:1200])
+                except Exception as e:
+                    st.error(f"Probe failed: {e}")
+                    import traceback; st.code(traceback.format_exc()[:3000])
+
+    _hist_df = project_manager.load_scan_results("cookie_bomb_probes", target_domain)
+    if isinstance(_hist_df, pd.DataFrame) and not _hist_df.empty:
+        st.markdown("---")
+        st.subheader(f"Probe history — {len(_hist_df)}")
+        st.dataframe(_hist_df, use_container_width=True)
+        st.download_button("📥 Probes CSV", _hist_df.to_csv(index=False),
+                           f"{target_domain}_cookie_bomb_probes.csv", "text/csv", key="dl_probes_tab9")
+        if st.button("Clear history", key="cb_clear_hist_tab9"):
+            project_manager.save_scan_results("cookie_bomb_probes", target_domain,
+                                              pd.DataFrame(columns=["url","param","size","verdict","reflected","follow_status","set_cookie","probe_url"]),
+                                              persist_empty=True)
+            st.rerun()

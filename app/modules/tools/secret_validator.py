@@ -17,6 +17,7 @@ import re
 import math
 import json
 import base64
+import bisect
 from typing import Dict, List, Optional
 
 
@@ -187,11 +188,11 @@ def extract_secrets(js_content: str, source_url: str,
     """Drop-in replacement for JSAnalyzer._extract_secrets()."""
     validator = validator or SecretValidator()
     findings: List[Dict] = []
+    line_starts = [i for i, ch in enumerate(js_content) if ch == '\n']
     for p in HARDENED_SECRET_PATTERNS:
         rx = re.compile(p["regex"])
         grp = p.get("group", 0)
         for match in rx.finditer(js_content):
-            # use the numbered group if it participated, else the whole match
             if grp and match.lastindex and grp <= match.lastindex:
                 value = match.group(grp)
             else:
@@ -200,11 +201,12 @@ def extract_secrets(js_content: str, source_url: str,
                 continue
             start = max(0, match.start() - 60)
             end = min(len(js_content), match.end() + 60)
+            line = bisect.bisect_right(line_starts, match.start()) + 1
             findings.append({
                 "type": p["name"],
                 "value": value,
                 "context": js_content[start:end].replace("\n", " ").strip(),
-                "line": js_content[:match.start()].count("\n") + 1,
+                "line": line,
                 "source": source_url,
             })
     return validator.filter_findings(findings, js_content)

@@ -13,6 +13,7 @@ from app.utils.user_agents import PROGRAM_UA_TAG
 # keeps this false-positive clean on VDP/Intigriti targets.
 
 import asyncio
+import concurrent.futures
 import re
 from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse
@@ -208,6 +209,13 @@ class ConfigSensitiveScanner:
         return {"rows": rows, "findings": findings}
 
     def scan_sync(self, urls: List[str]) -> Dict[str, Any]:
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running and running.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                return ex.submit(lambda: asyncio.run(self.scan(urls))).result()
         try:
             return asyncio.run(self.scan(urls))
         except Exception as exc:

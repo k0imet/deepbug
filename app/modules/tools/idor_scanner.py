@@ -57,14 +57,22 @@ class IDORScanner:
                 out.append(f)
         return out
 
-    def _replace_id_in_url(self, url: str, old_id: str, new_id: str) -> str:
+    def _replace_id_in_url(self, url: str, old_id: str, new_id: str,
+                           position: str = 'path') -> str:
         """Replace the ID in the PATH only (never the host/port - old code
         corrupted 127.0.0.1 -> 227.0.0.1 by replacing the first '1')."""
-        from urllib.parse import urlsplit, urlunsplit
+        from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
         parts = urlsplit(url)
-        path = parts.path.replace(old_id, new_id)
+        path = parts.path
+        query = parts.query
+        if position == 'query':
+            pairs = [(k, new_id if v == old_id else v)
+                     for k, v in parse_qsl(parts.query, keep_blank_values=True)]
+            query = urlencode(pairs, doseq=True)
+        else:
+            path = re.sub(rf'(?<=/){re.escape(old_id)}(?=/|$)', new_id, parts.path)
         return urlunsplit((parts.scheme, parts.netloc, path,
-                           parts.query, parts.fragment))
+                           query, parts.fragment))
 
     def _compare_json_responses(self, resp_a: dict, resp_b: dict) -> bool:
         """
@@ -96,7 +104,8 @@ class IDORScanner:
         except:
             return False
 
-    def test_idor(self, base_url: str, original_id: str, method: str = "GET", data: Optional[Dict] = None) -> List[Dict]:
+    def test_idor(self, base_url: str, original_id: str, method: str = "GET",
+                  data: Optional[Dict] = None, position: str = 'path') -> List[Dict]:
         if not self.session_a or not self.session_b:
             return []
 
@@ -111,7 +120,7 @@ class IDORScanner:
         results = []
         test_ids = [str(int(original_id) + offset) for offset in [1, 2, 3, -1, -2, -3, 10, 100]]
         for new_id in test_ids:
-            new_url = self._replace_id_in_url(base_url, original_id, new_id)
+            new_url = self._replace_id_in_url(base_url, original_id, new_id, position)
             try:
                 # Request with User A's session (should see different resource)
                 resp_a_test = self.session_a.request(method, new_url, json=data, timeout=5)
@@ -149,11 +158,13 @@ class IDORScanner:
                 progress_callback(idx / total, f"Testing {url} for IDOR...")
             id_infos = self._extract_ids_from_url(url)
             for info in id_infos:
-                if info['id_type'] == 'numeric':
+                if info['id_type'] == 'numeric' or (
+                        info['position'] == 'query' and info['id_value'].isdigit()):
                     findings = self.test_idor(
                         info['url'],
                         info['id_value'],
-                        method="GET"
+                        method="GET",
+                        position=info['position'],
                     )
                     all_findings.extend(findings)
 

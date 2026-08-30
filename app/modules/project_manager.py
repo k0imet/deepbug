@@ -365,7 +365,9 @@ class ProjectManager:
             return targets
         return self._scope_manager.filter_targets(targets)
 
-    def save_scan_results(self, scan_type: str, target: str, results: Union[pd.DataFrame, Dict[str, pd.DataFrame]]):
+    def save_scan_results(self, scan_type: str, target: str,
+                          results: Union[pd.DataFrame, Dict[str, pd.DataFrame]],
+                          persist_empty: bool = False):
         project_path = self.get_current_project_path()
         if not project_path:
             logger.error("Cannot save results: No project selected.")
@@ -379,13 +381,13 @@ class ProjectManager:
         file_path = target_dir / file_name
         try:
             if isinstance(results, pd.DataFrame):
-                if results.empty:
+                if results.empty and not persist_empty:
                     logger.info(f"Nothing to save for '{scan_type}' of '{target}': empty DataFrame.")
                     return
                 results, dropped = self._filter_df_by_scope(results)
                 if dropped:
                     logger.info(f"Scope: dropped {dropped} out-of-scope rows from '{scan_type}'")
-                if results.empty:
+                if results.empty and not persist_empty:
                     logger.info(f"Nothing to save for '{scan_type}' of '{target}': all rows out of scope.")
                     return
                 target_dir.mkdir(parents=True, exist_ok=True)
@@ -396,7 +398,7 @@ class ProjectManager:
                 if not results:
                     logger.info(f"Nothing to save for '{scan_type}' of '{target}': empty results dict.")
                     return
-                if all(v.empty for v in results.values()):
+                if all(v.empty for v in results.values()) and not persist_empty:
                     logger.info(f"Nothing to save for '{scan_type}' of '{target}': all DataFrames empty.")
                     return
                 nested_data = {}

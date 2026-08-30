@@ -50,13 +50,18 @@ if 'scan_status' not in st.session_state:
     })
 
 
-def run_nuclei_task(targets, template, queue, options=None):
-    """Background task to avoid blocking the Main Thread."""
+def run_nuclei_task(scanner, targets, template, queue, options=None):
+    """Background task to avoid blocking the Main Thread.
+
+    NOTE: this runs in a plain worker thread - st.session_state does NOT
+    exist there (it is bound to the script-run context), so the scanner
+    instance must be passed in as an argument.
+    """
     try:
         def progress_callback(p, msg):
             queue.put(('progress', p, msg))
 
-        df = st.session_state.scanner_tool.run_nuclei_scan(
+        df = scanner.run_nuclei_scan(
             targets, template_path=template, progress_callback=progress_callback,
             options=options
         )
@@ -279,7 +284,8 @@ if start_scan:
         st.session_state.scan_progress = 0.0
         st.session_state.scan_message = 'Starting scan...'
         threading.Thread(target=run_nuclei_task,
-                         args=(scan_targets, custom_path, st.session_state.scan_queue),
+                         args=(st.session_state.scanner_tool, scan_targets,
+                               custom_path, st.session_state.scan_queue),
                          kwargs={'options': scan_options},
                          daemon=True).start()
         st.rerun()

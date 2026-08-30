@@ -37,9 +37,6 @@ _DEFAULT_ORIGINS = [
     "https://deepbug-evil.example:8443",
 ]
 
-_MAX_ACAO = re.compile(r'^https?://[^\s,]+$')
-
-
 class CORSValidator:
     def __init__(self, config: Dict):
         cfg = config.get('cors_validator', {}) if isinstance(config, dict) else {}
@@ -60,13 +57,11 @@ class CORSValidator:
                         'Sink': f'AC-Allow-Origin: * + AC-Credentials: true (ignored by browsers)',
                         'Method': 'header-probe'}
             return None  # open API with wildcard - by design, not a finding
-        # explicit echo of our origin (or a close suffix variant)?
-        echoed = acao == origin
-        if not echoed and _MAX_ACAO.match(acao):
-            # server echoes some other concrete origin - nothing we control
-            if not (origin.replace('https://', '').endswith('.' + acao.replace('https://', ''))):
-                return None
-        if echoed or origin.lower() in (acao or '').lower():
+        # Browser acceptance requires an exact serialized-origin match. A
+        # substring/suffix relationship is neither reflection nor exploitable
+        # evidence for the origin we sent.
+        echoed = acao.lower() == origin.lower()
+        if echoed:
             if acac:
                 return {'Result': 'CONFIRMED', 'Class': 'cors-credentials',
                         'Sink': f'ACAO echoes {origin[:40]} + AC-Credentials: true',

@@ -19,7 +19,7 @@ import re
 import asyncio
 import aiohttp
 from typing import Dict, List, Optional, Callable, Any
-from urllib.parse import urlparse, urlencode, parse_qsl
+from urllib.parse import urlparse, urlencode, parse_qsl, quote, urljoin
 
 from app.utils.logger import get_logger
 
@@ -68,19 +68,14 @@ class OpenRedirectScanner:
                     status, location, body = await self._probe(session, candidate['url'])
                     if not location and not body:
                         continue
-                    evidence = ''
-                    if location and canary in location.lower():
-                        evidence = f'Location: {location}'
-                    elif canary in (body or '').lower():
-                        evidence = 'canary echoed in body'
-                    if evidence:
+                    if _location_matches_canary(location, candidate['url'], canary):
                         findings.append({
                             'url': candidate['url'],
                             'param': candidate['param'],
                             'technique': candidate['technique'],
                             'status': status,
                             'location': location,
-                            'evidence': evidence,
+                            'evidence': f'Location: {location}',
                         })
                 if progress_callback:
                     progress_callback(checked / max(total, 1),
@@ -121,22 +116,37 @@ def _redirect_variants(raw: str, canary: str) -> List[Dict]:
         return []
     base = f'{p.scheme}://{p.netloc}{p.path}'
     variants = []
-    for k, v in parse_qsl(p.query, keep_blank_values=True):
+    pairs = parse_qsl(p.query, keep_blank_values=True)
+    for index, (k, _v) in enumerate(pairs):
         if k.lower() not in _REDIRECT_PARAMS:
             continue
-        for technique, value in (
-                ('raw', f'https://{canary}/'),
-                ('plain', f'https://{canary}/'),
-                ('encoded', 'https%3A%2F%2F' + canary + '%2F'),
-                ('proto_relative', f'//{canary}/'),
-                ('double', f'https://{canary}/%2f%2f' + p.netloc)):
-            if technique == 'raw':
-                qs = f'{k}={value}'
-            else:
-                qs = urlencode({k: value})
+        target = f'https://{canary}/'
+        encoded_values = (
+            ('raw', quote(target, safe=':/')),
+            ('encoded', quote(target, safe='')),
+            ('double', quote(quote(target, safe=''), safe='')),
+            ('proto_relative', quote(f'//{canary}/', safe='/')),
+        )
+        for technique, encoded_value in encoded_values:
+            chunks = []
+            for pair_index, (pk, pv) in enumerate(pairs):
+                key = quote(str(pk), safe='')
+                value = encoded_value if pair_index == index else quote(str(pv), safe='')
+                chunks.append(f'{key}={value}')
+            qs = '&'.join(chunks)
             variants.append({'param': k, 'technique': technique,
-                             'url': f'{base}?{qs}'})
+                             'url': f'{base}?{qs}' + (f'#{p.fragment}' if p.fragment else '')})
     return variants
+
+
+def _location_matches_canary(location: str, request_url: str, canary: str) -> bool:
+    if not location:
+        return False
+    try:
+        destination = urlparse(urljoin(request_url, location.replace('\\', '/')))
+        return (destination.hostname or '').rstrip('.').lower() == canary.rstrip('.').lower()
+    except Exception:
+        return False
 
 
 def _run_coro(coro):

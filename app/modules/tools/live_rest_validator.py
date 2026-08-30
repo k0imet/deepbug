@@ -24,7 +24,7 @@ Config keys (under `rest_validator.*`):
 import re
 import asyncio
 from typing import Dict, List, Optional, Callable, Any
-from urllib.parse import urlparse, urlencode
+from urllib.parse import urlparse, urlencode, parse_qsl
 
 import aiohttp
 
@@ -272,7 +272,6 @@ class LiveRestValidator:
 
     @staticmethod
     def _swap_param(url: str, name: str, value: str) -> str:
-        from urllib.parse import urlparse, urlencode, parse_qsl
         p = urlparse(url)
         q = [(k, v) for k, v in parse_qsl(p.query) if k != name]
         q.append((name, value))

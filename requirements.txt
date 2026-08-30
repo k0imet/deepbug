@@ -10,8 +10,9 @@ httpx>=0.27
 
 # Misc
 requests>=2.31
+PyYAML>=6.0
+esprima>=4.0.1
 
 # --- Optional extras -------------------------------------------------
-# esprima-python        : JS AST analysis (js_analyzer)
 # playwright            : browser-based validators (DOM XSS, open redirect)
 # aiodns, brotli        : faster aiohttp DNS/compression

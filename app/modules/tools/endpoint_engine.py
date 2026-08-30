@@ -34,8 +34,11 @@ import asyncio
 import hashlib
 from typing import List, Dict, Any, Optional, Set, Tuple
 from app.utils.url_utils import urljoin, urlparse
+from app.utils.logger import get_logger
 
 import aiohttp
+
+logger = get_logger()
 
 
 # =====================================================================
@@ -142,6 +145,21 @@ _XHR_REGEX = re.compile(
     re.VERBOSE | re.IGNORECASE,
 )
 
+# Angular: this.http.get('url') / this.http.post('url', ...) / http.get('url')
+_ANGULAR_HTTP_VERB = re.compile(
+    r"""(?:this\.)?\bhttp\s*\.\s*(get|post|put|patch|delete|head|options)\s*\(\s*
+        (?:"|'|`)([^"'`?]+(?:\?[^"'`]*)?)(?:"|'|`)""",
+    re.VERBOSE | re.IGNORECASE,
+)
+
+# Angular: this.http.request('POST', 'url') / http.request('method', 'url')
+_ANGULAR_HTTP_REQUEST = re.compile(
+    r"""(?:this\.)?\bhttp\s*\.\s*request\s*\(\s*
+        (?:"|'|`)(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)(?:"|'|`)\s*,\s*
+        (?:"|'|`)([^"'`]+)(?:"|'|`)""",
+    re.VERBOSE | re.IGNORECASE,
+)
+
 _METHOD_IN_OBJ = re.compile(r"""method\s*:\s*(?:"|'|`)([A-Za-z]+)(?:"|'|`)""", re.IGNORECASE)
 _TYPE_IN_OBJ = re.compile(r"""(?:type|method)\s*:\s*(?:"|'|`)([A-Za-z]+)(?:"|'|`)""", re.IGNORECASE)
 _URL_IN_OBJ = re.compile(r"""url\s*:\s*(?:"|'|`)([^"'`]+)(?:"|'|`)""", re.IGNORECASE)
@@ -242,6 +260,11 @@ class EndpointExtractor:
 
         for m in _XHR_REGEX.finditer(js):
             add(m.group(2), m.group(1), "xhr", conf="high")
+
+        for m in _ANGULAR_HTTP_VERB.finditer(js):
+            add(m.group(2), m.group(1), "angular.http", conf="high")
+        for m in _ANGULAR_HTTP_REQUEST.finditer(js):
+            add(m.group(2), m.group(1), "angular.http", conf="high")
 
         # --- generic string harvest (high recall, lower confidence) ---
         for m in _LINK_REGEX.finditer(js):

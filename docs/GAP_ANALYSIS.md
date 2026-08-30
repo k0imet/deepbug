@@ -15,8 +15,9 @@ Severity = what it costs us in the field. Effort = rough implementation size.
 | 1.4 | **Served-but-unreferenced `.map` files** not probed | Juice Shop `main.js.map` 200 but bundle had no `sourceMappingURL` | Probe `{bundle}.map` for every found JS file (cheap, big win) | MED / S |
 | 1.5 | **Query params dropped from extracted endpoints** | `search?q=${…}` now kept, but ordinary `?a=1&b=2` URLs from HTML/markup still stripped in places | Normalize: keep query strings for API-ish paths; mark params for validators | MED / M |
 | 1.6 | **GF only scans URL strings**, not bodies/responses | Body-based SQLi/SSRF/reflection detection absent (kxss is the only body-aware tool) | Add a `body_scanner` pass: fetch candidate URLs once, run pattern sets over responses (bounded) | MED / M |
-| 1.7 | **Source-map content never unpacked into endpoints/secrets** | `unpack_sourcemap` exists; results only flagged, content unused | Feed unpacked sources through the full endpoint+secret pipeline | LOW / M |
+| 1.7 | **Source-map content never unpacked into endpoints/secrets** | `unpack_sourcemap` exists; results only flagged, content unused | Feed unpacked sources through the full endpoint+secret pipeline | **DONE (2026-08-26)** — deep-scan unpacks every map and runs the full detector set over sourcesContent; evidence rows in `js_source_maps`; see also Next.js/Vite additions |
 | 1.8 | **Single-page-app route catalog incomplete** for frameworks beyond React/Angular | Vue/Svelte/Ember route syntaxes unverified | Add Vue router + SvelteKit patterns; unit-test against framework bundles | LOW / S |
+| 1.9 | **Next.js build manifests / server actions invisible**; Vite/Rollup chunks missed | `_buildManifest.js` sortedPages enumerates routes without brute force; server-action hashes recoverable from bundles + maps; Vite lazy chunks only reachable via manifest/dynamic-import parsing | v3.7: proactive Next.js manifest discovery + action/flight inventory (`js_nextjs_artifacts`, inventory-only), Vite/Rollup dynamic-import & manifest coverage feeding the analyzer | **DONE (2026-08-26)** |
 
 ## 2. VALIDATION (the hands) — we find surface but can't prove
 

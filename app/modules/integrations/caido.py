@@ -177,7 +177,7 @@ class CaidoClient:
             raise ValueError(f"Caido GraphQL error: {'; '.join(messages) or errors}")
 
     @staticmethod
-    def _parse_url(url: str, headers: Optional[Dict[str, str]] = None) -> Dict:
+    def _parse_url(url: str, method: str = 'GET', headers: Optional[Dict[str, str]] = None) -> Dict:
         """Split a URL into host/port/scheme/tls/sni/raw-request parts.
         Extra headers (e.g. Authorization/cookies from an AuthSession) are
         injected into the raw request so authenticated testing works in Replay."""
@@ -190,7 +190,7 @@ class CaidoClient:
         path = parsed.path or "/"
         if parsed.query:
             path += f"?{parsed.query}"
-        raw = f"GET {path} HTTP/1.1\r\nHost: {host}\r\n"
+        raw = f"{method} {path} HTTP/1.1\r\nHost: {host}\r\n"
         for k, v in (headers or {}).items():
             raw += f"{k}: {v}\r\n"
         raw += "Connection: close\r\n\r\n"
@@ -202,9 +202,12 @@ class CaidoClient:
     # -------------------------------------------------------------- replay
     def import_replay_sessions(self, urls: List[str],
                                name: str = "DeepBug import",
+                               methods: Optional[List[str]] = None,
                                headers: Optional[Dict[str, str]] = None) -> List[str]:
-        """Create a replay session per URL and fire a raw GET replay task.
+        """Create a replay session per URL and fire a raw replay task.
 
+        urls: list of URLs to import.
+        methods: optional list of HTTP methods (same length as urls). Default: GET.
         headers: extra request headers injected into each raw request (e.g.
         {'Authorization': 'Bearer ...', 'Cookie': '...'}) for authenticated
         testing inside Caido Replay.
@@ -215,7 +218,8 @@ class CaidoClient:
         ids: List[str] = []
         for idx, url in enumerate(urls):
             try:
-                parts = self._parse_url(url, headers)
+                method = (methods[idx] if methods and idx < len(methods) else 'GET').upper()
+                parts = self._parse_url(url, method, headers)
                 if not parts["host"]:
                     raise ValueError(f"could not parse host from '{url}'")
                 session_id = self._create_session(name, idx, parts)
@@ -296,7 +300,7 @@ class CaidoClient:
             query = """
             query requestsList($first: Int, $filter: HTTPQLInput) {
               requests(first: $first, filter: $filter) {
-                nodes { id host method path query isTls port }
+                nodes { id host method path query isTls port response { statusCode } }
               }
             }
             """
@@ -305,7 +309,7 @@ class CaidoClient:
             query = """
             query requestsList($first: Int) {
               requests(first: $first) {
-                nodes { id host method path query isTls port }
+                nodes { id host method path query isTls port response { statusCode } }
               }
             }
             """
@@ -338,7 +342,7 @@ class CaidoClient:
                 "id": str(node.get("id") or ""),
                 "url": url,
                 "method": str(node.get("method") or ""),
-                "status": "",
+                "status": str((node.get("response") or {}).get("statusCode") or node.get("status") or ""),
             })
         return out
 

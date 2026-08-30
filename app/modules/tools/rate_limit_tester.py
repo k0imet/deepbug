@@ -62,8 +62,6 @@ class RateLimitTester:
     def _verdict(self, counts: Counter, signals: int) -> Dict:
         if counts[429]:
             kind = "429"
-        elif counts[400]:
-            kind = "400"
         elif counts[503]:
             kind = "503"
         elif signals:

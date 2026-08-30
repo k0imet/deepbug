@@ -139,12 +139,9 @@ if not available:
         "it's held in the session only. Local models (Ollama / LM Studio) work "
         "with `http://localhost:<port>/v1` and any model name.")
 else:
-    with st.form(key="ai_chat_form", clear_on_submit=True):
-        prompt = st.text_input("Message", placeholder="Ask about your findings, endpoints or methodology...",
-                               key="ai_chat_input")
-        submitted = st.form_submit_button("Send", use_container_width=True)
+    prompt = st.chat_input("Ask about your findings, endpoints or methodology...")
 
-    if submitted and prompt:
+    if prompt:
         st.session_state.ai_chat_messages.append({'role': 'user', 'content': prompt})
         with st.chat_message('user'):
             st.markdown(prompt)
@@ -164,7 +161,6 @@ else:
         if reply:
             st.session_state.ai_chat_messages.append({'role': 'assistant', 'content': reply})
             _save_chat(st.session_state.ai_chat_messages)
-        st.rerun()
 
 # ---------------------------------------------------------------------
 # Analyze saved scan results

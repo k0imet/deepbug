@@ -141,13 +141,17 @@ class GraphQLScanner:
         try:
             d = json.loads(text)
             if isinstance(d, dict) and isinstance(d.get('errors'), list) and d['errors']:
-                joined = ' '.join(str(e.get('message', '')) if isinstance(e, dict) else str(e)
-                                  for e in d['errors'])
-                if joined and ('authorization' in joined.lower() or
-                               'authenticated' in joined.lower() or
-                               'unauthorized' in joined.lower() or
-                               'token' in joined.lower() or
-                               'forbidden' in joined.lower()):
+                error_rows = [e for e in d['errors'] if isinstance(e, dict)]
+                joined = ' '.join(str(e.get('message', '')) for e in error_rows)
+                has_graphql_shape = any(
+                    e.get('errorType') or isinstance(e.get('extensions'), dict)
+                    for e in error_rows)
+                if has_graphql_shape and joined and (
+                        'authorization' in joined.lower() or
+                        'authenticated' in joined.lower() or
+                        'unauthorized' in joined.lower() or
+                        'token' in joined.lower() or
+                        'forbidden' in joined.lower()):
                     return 'gated_auth'
         except Exception:
             pass

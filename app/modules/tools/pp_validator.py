@@ -94,7 +94,6 @@ class PrototypePollutionValidator:
     def _with_query(url: str, payload: str) -> str:
         """Append a raw payload pair to the QUERY (fragment-safe). Payload is
         NOT url-encoded - brackets/dots must survive to the vulnerable parser."""
-        from urllib.parse import urlunparse
         parsed = urlparse(url)
         # NOTE: urlunparse inserts the '?' itself - the query component must
         # NOT include a leading separator.

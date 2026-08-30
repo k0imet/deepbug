@@ -25,6 +25,36 @@ def _load_ua_tag() -> str:
 
 PROGRAM_UA_TAG = _load_ua_tag()
 
+
+def get_bug_bounty_headers() -> dict:
+    """Return required program attribution headers (e.g. X-Bug-Bounty).
+
+    Reads tools.bug_bounty_header / tools.custom_headers from config.json.
+    Falls back to env DEEPBUG_BUG_BOUNTY.
+    """
+    try:
+        config_path = Path(__file__).resolve().parents[2] / 'app' / 'modules' / 'config.json'
+        if config_path.is_file():
+            cfg = json.loads(config_path.read_text())
+            tools = cfg.get('tools', {})
+            # explicit bug bounty header
+            if 'bug_bounty_header' in tools and isinstance(tools['bug_bounty_header'], dict):
+                hdr = tools['bug_bounty_header']
+                name = hdr.get('name', 'X-Bug-Bounty')
+                value = hdr.get('value', '')
+                if value:
+                    return {name: value}
+            # generic custom headers
+            if 'custom_headers' in tools and isinstance(tools['custom_headers'], dict):
+                return {str(k): str(v) for k, v in tools['custom_headers'].items() if v}
+    except Exception:
+        pass
+    env_val = os.environ.get('DEEPBUG_BUG_BOUNTY', '')
+    if env_val:
+        return {'X-Bug-Bounty': env_val}
+    return {}
+
+
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',

@@ -142,11 +142,14 @@ class Bypass403Engine:
 
 
 def _is_freed(status: int, length: int, baseline: int) -> bool:
-    if status == baseline or status in _DENY_STATUSES:
+    if status == baseline or status in _DENY_STATUSES or status >= 500:
         return False
-    if status in _FREE_STATUSES:
+    # A successful representation is confirmation-quality. Authentication
+    # challenges, validation errors, and redirects are differentials worth
+    # manual review, but are not authorization bypasses.
+    if 200 <= status < 300:
         return True
-    return length > 0
+    return False
 
 
 def _run_coro(coro):

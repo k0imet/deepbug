@@ -36,7 +36,7 @@ the Burp Suite + Caido integration surfaces._
 | 3 | **DNS resolution & alive filtering** | dnsx resolve + httpx alive, wildcard filter | 🟢 B+ |
 | 4 | **Port & service discovery** | nmap/masscan/naabu + webanalyze fingerprinting | 🟢 B+ |
 | 5 | **Crawling & URL harvest** | katana crawl, CDX/CommonCrawl/OTX archives, URL cleaner, shadow API, websocket discovery | 🟢 A− |
-| 6 | **JS analysis & endpoint extraction** | JSAnalyzer v3.1 (endpoints, secrets, source maps, PP, DOM clobbering, postMessage, JSONP, CSP gadgets, frameworks) + GF secret scanner + validators | 🟢 A+ |
+| 6 | **JS analysis & endpoint extraction** | JSAnalyzer v3.7 (endpoints, secrets, source maps with unpack evidence, PP, DOM clobbering, postMessage, JSONP, CSP gadgets, frameworks; v3.7 adds proactive Next.js build-manifest discovery + App Router flight/server-action inventory and Vite/Rollup manifest/dynamic-import chunk coverage) + GF secret scanner + validators | 🟢 A+ |
 | 7 | **Parameter discovery** | x8 / arjun / paramspider + built-in fuzzer + historical params | 🟢 A− |
 | 8 | **Vulnerability scanning (DAST)** | nuclei + 20+ focused scanners (GF families, kxss, CSTI/SSTI, SQLi, XXE, SSRF+validator, IDOR/BOLA, JWT, 403-bypass, mass assignment, GraphQL suite, open redirect, config exposure, git disclosure, cache… ) | 🟢 A |
 | 9 | **Manual validation & exploitation** | **Proxy integration: none** · no Repeater/Replay · no OOB collaborator · no request crafting UI | 🔴 F |

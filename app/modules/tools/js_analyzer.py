@@ -44,6 +44,7 @@ from app.utils.url_utils import urlparse, urljoin, safe_port
 from collections import defaultdict
 import os
 import hashlib
+from html.parser import HTMLParser
 
 # Dual import keeps both `modules.X` (streamlit pages) and `app.modules.X`
 # (headless tests) working.
@@ -229,18 +230,6 @@ PROTOTYPE_POLLUTION_PATTERNS = [
 ]
 
 # ---------------------------------------------------------------------
-# DOM CLOBBING DETECTION
-# ---------------------------------------------------------------------
-DOM_CLOBBING_PATTERNS = [
-    r'document\.getElementById\s*\(\s*[^)]{1,200}\s*\)\.\w+\s*[=:]',
-    r'document\.getElementsByName\s*\(',
-    r'\.innerHTML\s*[=:]',
-    r'\.outerHTML\s*[=:]',
-    r'\.insertAdjacentHTML\s*\(',
-    r'document\.[A-Za-z_][A-Za-z0-9_]*\s*[=:]',
-]
-
-# ---------------------------------------------------------------------
 # POSTMESSAGE INSECURITY
 # v3.1: `event\.data\s*(?!.*event\.origin)` was O(n^2) on minified code -
 # the unbounded `.*` inside the lookahead rescanned the rest of the file at
@@ -275,46 +264,6 @@ DANGEROUS_PATTERNS = {
     'import_scripts': r'importScripts\s*\(',
     'worker': r'new\s+(Worker|SharedWorker)\s*\(',
 }
-
-# ---------------------------------------------------------------------
-# JSONP DETECTION
-# ---------------------------------------------------------------------
-JSONP_PATTERNS = [
-    r'callback\s*=\s*([A-Za-z_][A-Za-z0-9_]*)',
-    r'jsonp\s*=\s*([A-Za-z_][A-Za-z0-9_]*)',
-    r'\?[^"\'\s]{0,200}callback=',
-    r'\?[^"\'\s]{0,200}jsonp=',
-]
-
-# ---------------------------------------------------------------------
-# DYNAMIC RENDERING DETECTION
-# ---------------------------------------------------------------------
-DYNAMIC_RENDERING_PATTERNS = [
-    r'puppeteer',
-    r'playwright',
-    r'rendertron',
-    r'prerender',
-    r'headless',
-    r'chrome-launcher',
-    r'puppeteer-extra',
-    r'stealth',
-]
-
-# ---------------------------------------------------------------------
-# CSP BYPASS GADGETS
-# ---------------------------------------------------------------------
-CSP_GADGET_PATTERNS = [
-    r'unsafe-inline',
-    r'unsafe-eval',
-    r'strict-dynamic',
-    r'nonce-["\']?\s*[=:]',
-    r'sha256-',
-    r'sha384-',
-    r'javascript:\s*',
-    r'eval\s*\(',
-    r'Function\s*\(',
-]
-
 
 # ---------------------------------------------------------------------
 # VENDOR / THIRD-PARTY LIBRARY SIGNATURES
@@ -466,9 +415,353 @@ VULNERABLE_LIBRARIES = {
 }
 
 
+# ---------------------------------------------------------------------
+# v3.7: PROACTIVE NEXT.JS MANIFEST DISCOVERY + APP ROUTER / FLIGHT /
+# SERVER-ACTION INVENTORY + VITE/ROLLUP CHUNK COVERAGE
+#
+# Grounding (preview.is corpus):
+# - hacktricks.wiki NextJS page: buildId from __NEXT_DATA__ or
+#   /_next/static/<buildId>/ script refs; _buildManifest.js sortedPages
+#   enumerates prerendered pages without brute force.
+# - adversis.io / deepstrike.io: createServerReference hashes recoverable
+#   from bundles; productionBrowserSourceMaps exposes hash->function maps.
+#   Function-name disclosure is architecture evidence, NOT a vulnerability.
+# ---------------------------------------------------------------------
+
+# buildId values are opaque build tokens: [A-Za-z0-9][A-Za-z0-9._-]{2,119}.
+# Tolerant to both raw JSON ("buildId":"x") and escaped inline forms
+# (self.__NEXT_DATA__=JSON.parse("{\"buildId\":\"x\"})).
+NEXTJS_BUILD_ID_RE = re.compile(
+    r'\\?"buildId\\?"\s*:\s*\\?"([A-Za-z0-9][A-Za-z0-9._-]{2,119})\\?"')
+NEXTJS_STATIC_REF_RE = re.compile(
+    r'/_next/static/([A-Za-z0-9][A-Za-z0-9._-]{2,119})/'
+    r'(?:_buildManifest|_ssgManifest|_middlewareManifest)\.js')
+NEXTJS_MANIFEST_FILES = ('_buildManifest.js', '_ssgManifest.js',
+                         '_middlewareManifest.js', '_routesManifest.json')
+# Server-only filesystem artifacts are NEVER probed blindly - only fetched
+# when the page/bundle itself references the exact path.
+NEXTJS_SERVER_ARTIFACT_RE = re.compile(
+    r'[\'"]/?(_next/server/[A-Za-z0-9_./\[\]%()-]{1,180})[\'"]')
+_NEXT_NON_BUILD_SEGMENTS = {
+    'chunks', 'static', 'css', 'media', 'image', 'img', 'pages', 'app',
+    'icons', 'fonts', 'webpack',
+}
+
+NEXT_ACTION_ID = r'[A-Za-z0-9_-]{16,128}'
+# Server-action registration variants (bundle + minified alias forms).
+SERVER_ACTION_PATTERNS = [
+    # createServerReference("<id>", callServer, findSourceMapURL, "<name>")
+    (re.compile(r'createServerReference\s*\(\s*[\'"](' + NEXT_ACTION_ID +
+                r')[\'"]\s*(?:,\s*[\'"]([^"\']{0,200})[\'"])?.{0,240}'),
+     'create_server_reference'),
+    # (0, x.createServerReference)("<id>", ...)  - common interop form
+    (re.compile(r'createServerReference\s*\)\s*\(\s*[\'"](' + NEXT_ACTION_ID +
+                r')[\'"](?:\s*,\s*[\'"]([^"\']{0,200})[\'"])?.{0,240}'),
+     'create_server_reference_interop'),
+    # Minified arg-shuffled aliases: createServerReference binds elsewhere,
+    # id still appears as first string argument shortly after the name.
+    (re.compile(r'\bcreateServerReference\b[^"\'(]{0,40}\(\s*[\'"]' +
+                r'(' + NEXT_ACTION_ID + r')[\'"]'),
+     'create_server_reference_alias'),
+    # registerServerReference(fn, "<id>", "<exportName>")
+    (re.compile(r'registerServerReference\s*\(\s*([A-Za-z_$][\w$]{0,199})?'
+                r'[^)]{0,80}?[\'"](' + NEXT_ACTION_ID + r')[\'"]'
+                r'(?:\s*,\s*[\'"]([^"\']{0,200})[\'"])?'),
+     'register_server_reference'),
+    # Captured request tables / docs that quote the header directly.
+    (re.compile(r'[\'"]Next-Action[\'"]\s*[,:]\s*[\'"](' + NEXT_ACTION_ID +
+                r')[\'"]'),
+     'next_action_header'),
+]
+# Internal action-entry map retained in unminified modules and source maps:
+# {"<id>":"functionName", ...}
+NEXT_ACTION_ENTRY_MAP_RE = re.compile(
+    r'[\'"](' + NEXT_ACTION_ID + r')[\'"]\s*:\s*'
+    r'[\'"]([A-Za-z_$][\w$]{0,199})[\'"]')
+# App Router flight payload: self.__next_f.push([N,"...escaped json..."])
+FLIGHT_PUSH_RE = re.compile(
+    r'self\._{2,5}next_f\.push\s*\(\s*\[\s*\d+\s*,\s*'
+    r'("(?:[^"\\]|\\.){1,400000}")\s*\]\s*\)')
+MAX_FLIGHT_PUSHES = 400
+
+VITE_RUNTIME_MARKERS = (
+    '__vite__mapDeps', '__vitePreload', '__viteLegacyPlugin',
+    '__VITE_IS_MODERN__', 'vite/preload-helper', '/@vite/client',
+    'import.meta.env',
+)
+VITE_DYNAMIC_IMPORT_RE = re.compile(
+    r'\bimport\s*\(\s*[\'"]((?:\.{1,2}/|/)[^\'"()\\]{1,300}?\.m?js)'
+    r'(?:\?[^\'")]{0,120})?[\'"]\s*\)')
+VITE_MAPDEPS_ASSETS_RE = re.compile(
+    r'__vite__mapDeps\s*=.{0,600}?\[\s*([^\]]{1,8000})\]')
+VITE_PRELOAD_DEPS_RE = re.compile(
+    r'__vitePreload\s*\([^;{}]{0,800}?\[\s*([^\]]{1,4000})\]')
+VITE_MANIFEST_REF_RE = re.compile(
+    r'[\'"]([^\'"]{0,160}(?:\.vite/)?manifest\.json)[\'"]')
+_JS_ASSET_SUFFIXES = ('.js', '.mjs')
+
+# String-literal asset names used by __vite__mapDeps / preload deps arrays.
+_VITE_ASSET_NAME_RE = re.compile(r'[\'"]([^\'"]{1,300})[\'"]')
+
+
+def _dedup_keep_order(values) -> List[str]:
+    seen = set()
+    out = []
+    for v in values:
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def extract_nextjs_build_ids(text: str) -> List[str]:
+    """Build IDs from __NEXT_DATA__ JSON (raw or escaped) and from
+    /_next/static/<id>/_buildManifest.js style references. Opaque-token
+    charset enforced; framework path segments are never accepted."""
+    if not text:
+        return []
+    ids = [m.group(1) for m in NEXTJS_BUILD_ID_RE.finditer(text)]
+    ids += [m.group(1) for m in NEXTJS_STATIC_REF_RE.finditer(text)]
+    return _dedup_keep_order(
+        i for i in ids if i.lower() not in _NEXT_NON_BUILD_SEGMENTS)
+
+
+def nextjs_manifest_candidates(base_url: str, build_id: str) -> List[str]:
+    """Absolute client-manifest URLs for one origin + buildId. Client-reachable
+    artifacts only; server-only paths are handled separately and only when
+    explicitly referenced."""
+    origin = f'{urlsplit(base_url).scheme}://{urlsplit(base_url).netloc}'
+    return [f'{origin}/_next/static/{build_id}/{name}' for name in NEXTJS_MANIFEST_FILES]
+
+
+def _balanced_array(text: str, open_idx: int, max_len: int = 20002) -> str:
+    """Content between the bracket at open_idx and its matching ']' - route
+    arrays like ["/blog/[slug]"] contain nested brackets, so a naive
+    first-']' regex truncates dynamic-route entries."""
+    depth = 0
+    end = min(len(text), open_idx + max_len)
+    for i in range(open_idx, end):
+        c = text[i]
+        if c == '[':
+            depth += 1
+        elif c == ']':
+            depth -= 1
+            if depth == 0:
+                return text[open_idx + 1:i]
+    return ''
+
+
+def _sorted_pages_block(text: str) -> str:
+    idx = text.find('sortedPages')
+    while idx != -1:
+        open_idx = text.find('[', idx, idx + 200)
+        if open_idx != -1:
+            return _balanced_array(text, open_idx)
+        idx = text.find('sortedPages', idx + 1)
+    return ''
+
+
+def parse_next_build_manifest(text: str, manifest_url: str) -> Dict[str, List[str]]:
+    """Routes + lazy chunk URLs from _buildManifest.js. Tolerates the plain
+    object form AND the IIFE-wrapped minified variant by working on string
+    literals instead of parsing JS."""
+    routes: List[str] = []
+    chunks: List[str] = []
+    block = _sorted_pages_block(text)
+    if block:
+        routes += re.findall(r'[\'"](/[^\'"\\]{0,499})[\'"]', block)
+    # Route keys mapping straight to chunk arrays: {"/about":["static/...js"]}
+    for km in re.finditer(r'[{,]\s*[\'"](/[^\'"{}\[\]]{0,199})[\'"]\s*:\s*\[',
+                          text):
+        tail = text[km.end():km.end() + 600]
+        if '.js' in tail or '.mjs' in tail:
+            routes.append(km.group(1))
+    for cm in re.finditer(
+            r'[\'"]((?:https?://|static/|chunks/|\./)[^\'"\s\\]{0,240}?\.m?js)[\'"]',
+            text):
+        raw = cm.group(1)
+        if raw.startswith(('http://', 'https://')):
+            chunks.append(raw)
+        else:
+            chunks.append(urljoin(manifest_url, raw.lstrip('./')))
+    return {'routes': _dedup_keep_order(routes),
+            'chunks': _dedup_keep_order(chunks)}
+
+
+def parse_next_routes_manifest(text: str) -> List[str]:
+    """Route/page fields from _routesManifest.json (defensive JSON read)."""
+    try:
+        data = json.loads(text)
+    except Exception:
+        return []
+    routes: List[str] = []
+
+    def _walk(node):
+        if isinstance(node, dict):
+            for key in ('route', 'page'):
+                val = node.get(key)
+                if isinstance(val, str) and val.startswith('/'):
+                    routes.append(val)
+            for child in node.values():
+                _walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                _walk(child)
+
+    if isinstance(data, dict):
+        _walk(data.get('dynamicRoutes') or [])
+        _walk(data.get('dataRoutes') or [])
+        pages = data.get('pages')
+        if isinstance(pages, list):
+            routes.extend(p for p in pages
+                          if isinstance(p, str) and p.startswith('/'))
+    return _dedup_keep_order(routes)[:500]
+
+
+def parse_next_path_set_manifest(text: str) -> List[str]:
+    """Quoted absolute paths from _ssgManifest.js / _middlewareManifest.js
+    (`new Set(["/a","/b"])` or array forms)."""
+    return _dedup_keep_order(
+        m.group(1) for m in re.finditer(
+            r'[\'"](/[A-Za-z0-9_\-.~%/]{0,499})[\'"]', text))[:500]
+
+
+def decode_flight_payloads(content: str) -> List[str]:
+    """Unescape self.__next_f.push(...) string payloads so the standard
+    action/route detectors can run over flight data. Bounded count."""
+    decoded = []
+    for i, m in enumerate(FLIGHT_PUSH_RE.finditer(content)):
+        if i >= MAX_FLIGHT_PUSHES:
+            break
+        try:
+            text = json.loads(m.group(1))
+        except Exception:
+            continue
+        if isinstance(text, str) and len(text) > 8:
+            decoded.append(text)
+    return decoded
+
+
+def dedupe_nextjs_artifacts(rows: List[Dict]) -> List[Dict]:
+    """Global cross-source dedup (bundles, chunks, source maps, flight)."""
+    best: Dict[tuple, Dict] = {}
+    order: List[tuple] = []
+    conf_rank = {'high': 2, 'medium': 1, 'low': 0}
+    for row in rows:
+        key = (row.get('type', ''), row.get('value', ''),
+               row.get('function_name', ''), row.get('route_or_module', ''))
+        cur = best.get(key)
+        if cur is None:
+            best[key] = row
+            order.append(key)
+        else:
+            if (conf_rank.get(row.get('confidence', 'medium'), 1) >
+                    conf_rank.get(cur.get('confidence', 'medium'), 1)):
+                best[key] = row
+    return [best[k] for k in order]
+
+
+def extract_vite_assets(content: str) -> Dict[str, List[str]]:
+    """Literal dynamic imports + Vite preload dependency arrays.
+
+    Returns {'chunks': [...js/mjs], 'other': [...css/img/fonts]} relative to
+    the referencing bundle. CSS/images are recorded but never analyzed as JS.
+    """
+    literals: List[str] = []
+    for pattern in (VITE_DYNAMIC_IMPORT_RE, VITE_MAPDEPS_ASSETS_RE,
+                    VITE_PRELOAD_DEPS_RE):
+        for m in pattern.finditer(content):
+            if pattern is VITE_DYNAMIC_IMPORT_RE:
+                literals.append(m.group(1))
+            else:
+                literals.extend(
+                    g for g in _VITE_ASSET_NAME_RE.findall(m.group(1))
+                    if not g.isdigit())
+    chunks, other = [], []
+    for lit in _dedup_keep_order(literals):
+        clean = lit.split('?')[0]
+        if clean.lower().endswith(_JS_ASSET_SUFFIXES):
+            chunks.append(clean)
+        elif clean.startswith('/') or '/' in clean or '.' in clean:
+            other.append(clean)
+    return {'chunks': chunks, 'other': other}
+
+
+def has_vite_evidence(content: str) -> bool:
+    """Strong Vite/Rollup evidence: runtime marker present AND a dynamic
+    import / preload structure. import.meta alone is not strong enough."""
+    if not content or not any(marker in content
+                              for marker in VITE_RUNTIME_MARKERS):
+        return False
+    return bool(VITE_DYNAMIC_IMPORT_RE.search(content) or
+                '__vite__mapDeps' in content or '__vitePreload' in content)
+
+
+def vite_manifest_candidates(bundle_url: str, content: str) -> Tuple[List[str], bool]:
+    """Public manifest.json probe list for one bundle. Probing happens ONLY
+    when the bundle references a manifest path OR strong Vite evidence exists;
+    candidate count is bounded either way."""
+    candidates = [urljoin(bundle_url, ref)
+                  for ref in _dedup_keep_order(
+                      VITE_MANIFEST_REF_RE.findall(content or ''))][:4]
+    strong = has_vite_evidence(content)
+    if strong and len(candidates) < 6:
+        directory = bundle_url.rsplit('/', 1)[0]
+        for name in ('.vite/manifest.json', 'manifest.json'):
+            cand = f'{directory}/{name}'
+            if cand not in candidates:
+                candidates.append(cand)
+            if len(candidates) >= 6:
+                break
+    return _dedup_keep_order(candidates), strong
+
+
+def parse_vite_manifest(data, base_url: str) -> Dict[str, List[str]]:
+    """Vite/Rollup manifest entries -> resolved URLs. JS entries feed the
+    analyzer; css/assets are recorded only."""
+    out = {'entries': [], 'chunks': [], 'css': [], 'assets': [], 'sources': []}
+    if not isinstance(data, dict):
+        return out
+
+    def _resolve(key):
+        meta = data.get(key)
+        if isinstance(meta, dict) and meta.get('file'):
+            return urljoin(base_url, meta['file'])
+        if isinstance(key, str) and key.startswith(('http://', 'https://')):
+            return key
+        if isinstance(key, str):
+            return urljoin(base_url, key)
+        return ''
+
+    for src, meta in data.items():
+        if not isinstance(meta, dict):
+            continue
+        out['sources'].append(str(src))
+        f = str(meta.get('file') or '')
+        if f:
+            url = urljoin(base_url, f)
+            if f.lower().endswith(_JS_ASSET_SUFFIXES):
+                out['entries' if meta.get('isEntry') else 'chunks'].append(url)
+            elif f.lower().endswith('.css'):
+                out['css'].append(url)
+            else:
+                out['assets'].append(url)
+        for imp in (meta.get('imports') or []) + (meta.get('dynamicImports') or []):
+            u = _resolve(imp)
+            if u and u.lower().endswith(_JS_ASSET_SUFFIXES):
+                out['chunks'].append(u)
+        for cssf in meta.get('css') or []:
+            out['css'].append(urljoin(base_url, str(cssf)))
+        for asset in meta.get('assets') or []:
+            out['assets'].append(urljoin(base_url, str(asset)))
+    for key in ('entries', 'chunks', 'css', 'assets', 'sources'):
+        out[key] = _dedup_keep_order(out[key])
+    return out
+
+
 class JSAnalyzer:
     """
-    High-performance async JS analyzer v3.1 (performance-hardened).
+    High-performance async JS analyzer v3.7 (performance-hardened).
     """
 
     def __init__(self, config: Dict):
@@ -477,9 +770,15 @@ class JSAnalyzer:
         self.max_file_size = config.get('js_max_size', 5 * 1024 * 1024)
         self.max_concurrent_requests = config.get('js_concurrent', 100)
 
+        try:
+            from app.utils.user_agents import get_bug_bounty_headers as _bbh
+            _bb_headers = _bbh()
+        except Exception:
+            _bb_headers = {}
         self.headers = {
             'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                          '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36') + PROGRAM_UA_TAG
+                          '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36') + PROGRAM_UA_TAG,
+            **_bb_headers,
         }
 
         self.explorer = JSApiExplorer(config)
@@ -548,14 +847,17 @@ class JSAnalyzer:
         self._compiled_routes = [re.compile(p) for p in SPA_ROUTE_PATTERNS]
         self._compiled_nonprod = [(re.compile(p), k) for p, k in NONPROD_HOST_PATTERNS]
 
+        # ---- v3.7: Next.js manifests / Vite coverage caps (bounded probing)
+        self.max_nextjs_manifests = int(config.get('js_max_nextjs_manifests', 16))
+        self.max_vite_manifest_probes = int(config.get('js_max_vite_manifest_probes', 6))
+        # per-run state for candidate generation during seed HTML processing
+        self._nextjs_candidates: Set[str] = set()
+        self._candidate_notes: List[Dict] = []
+
         # Compile regex patterns for performance
         self._compiled_dangerous = {k: re.compile(v, re.IGNORECASE) for k, v in DANGEROUS_PATTERNS.items()}
         self._compiled_proto = [re.compile(p, re.IGNORECASE) for p in PROTOTYPE_POLLUTION_PATTERNS]
-        self._compiled_clobbing = [re.compile(p, re.IGNORECASE) for p in DOM_CLOBBING_PATTERNS]
         self._compiled_postmsg = [re.compile(p, re.IGNORECASE) for p in POSTMESSAGE_PATTERNS]
-        self._compiled_jsonp = [re.compile(p, re.IGNORECASE) for p in JSONP_PATTERNS]
-        self._compiled_rendering = [re.compile(p, re.IGNORECASE) for p in DYNAMIC_RENDERING_PATTERNS]
-        self._compiled_csp = [re.compile(p, re.IGNORECASE) for p in CSP_GADGET_PATTERNS]
 
         # verified-false-positive corpus (fed by prior triage runs)
         fp_path = config.get('false_positive_corpus')
@@ -747,35 +1049,65 @@ class JSAnalyzer:
             full = urljoin(base_href, src)
             return full if full.startswith(('http://', 'https://')) else ''
 
-        # <script src=...>
-        for match in re.finditer(r'<script\b[^>]*\bsrc=["\x27]([^"\x27]+)["\x27]', html, re.I):
-            u = _abs(match.group(1))
+        class _AssetParser(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=True)
+                self.scripts = []
+                self.inline = []
+                self.links = []
+                self.frames = []
+                self.base = ''
+                self._inline_parts = None
+
+            def handle_starttag(self, tag, attrs):
+                a = {str(k).lower(): (v or '') for k, v in attrs}
+                tag = tag.lower()
+                if tag == 'script':
+                    if a.get('src'):
+                        self.scripts.append(a['src'])
+                    else:
+                        self._inline_parts = []
+                elif tag == 'link' and a.get('href'):
+                    rel = {x.lower() for x in a.get('rel', '').split()}
+                    if 'modulepreload' in rel or ('preload' in rel and a.get('as', '').lower() == 'script'):
+                        self.links.append(a['href'])
+                elif tag in ('iframe', 'frame') and a.get('src'):
+                    self.frames.append(a['src'])
+                elif tag == 'base' and a.get('href') and not self.base:
+                    self.base = a['href']
+
+            def handle_data(self, data):
+                if self._inline_parts is not None:
+                    self._inline_parts.append(data)
+
+            def handle_endtag(self, tag):
+                if tag.lower() == 'script' and self._inline_parts is not None:
+                    self.inline.append(''.join(self._inline_parts))
+                    self._inline_parts = None
+
+        parser = _AssetParser()
+        try:
+            parser.feed(html)
+        except Exception as e:
+            logger.debug(f"Tolerant HTML parsing stopped early for {base_url}: {e}")
+
+        if parser.base:
+            parsed_base = urljoin(base_url, parser.base)
+            if parsed_base.startswith(('http://', 'https://')):
+                base_href = parsed_base
+
+        for src in parser.scripts + parser.links:
+            u = _abs(src)
             if u and u not in js_urls:
                 js_urls.append(u)
-        # <script>...</script> inline bodies (boot configs, secrets, endpoints)
-        for match in re.finditer(
-                r'<script\b(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script>', html, re.I | re.S):
-            body = match.group(1).strip()
+        for raw_body in parser.inline:
+            body = raw_body.strip()
             if body and len(body) > 16 and not body.lstrip().startswith(('<', '<!--')):
                 inline.append(body)
-        # link rel=modulepreload / preload as=script
-        for match in re.finditer(
-                r'<link\b[^>]*\brel=["\x27](?:modulepreload|preload)["\x27][^>]*>', html, re.I):
-            href = re.search(r'\bhref=["\x27]([^"\x27]+)["\x27]', match.group(0), re.I)
-            if href and ('as="script"' in match.group(0) or 'as=script' in match.group(0) or
-                         'modulepreload' in match.group(0)):
-                u = _abs(href.group(1))
-                if u and u not in js_urls:
-                    js_urls.append(u)
-            elif href:
-                u = _abs(href.group(1))
-                if u and u not in js_urls:
-                    js_urls.append(u)
-        # iframe src (often loads the real SPA shell / app JS)
-        for match in re.finditer(r'<iframe\b[^>]*\bsrc=["\x27]([^"\x27]+)["\x27]', html, re.I):
-            u = _abs(match.group(1))
-            if u and u not in js_urls:
-                js_urls.append(u)
+
+        # Frames are HTML documents, not JavaScript.  Keep them separate so
+        # the project collector can crawl their script tags one level deep.
+        self._last_frame_urls = [u for src in parser.frames if (u := _abs(src))]
         return js_urls, inline
 
     async def _fetch_single_html_and_extract(self, session: aiohttp.ClientSession,
@@ -801,6 +1133,8 @@ class JSAnalyzer:
                         pseudo = f"{url.rstrip('/')}~inline{i}"
                         self._inline_scripts[pseudo] = body
                         js_urls.append(pseudo)
+                    js_urls.extend(self._collect_nextjs_candidates(
+                        text, inline, url))
                     info['outcome'] = f'html_ok:{len(js_urls)}'
                     info['ms'] = round((_t.monotonic() - start) * 1000, 1)
                     return js_urls, info
@@ -814,6 +1148,60 @@ class JSAnalyzer:
             logger.debug(f"Failed pre-fetching url list target {url}: {e}")
         info['ms'] = round((_t.monotonic() - start) * 1000, 1)
         return [], info
+
+    def _collect_nextjs_candidates(self, html_text: str,
+                                   inline_bodies: List[str],
+                                   page_url: str) -> List[str]:
+        """Proactive Next.js client-manifest discovery from a fetched page.
+
+        Sources: __NEXT_DATA__ buildId (raw or escaped), /_next/static/<id>/
+        script references, and literal /_next/server/... artifact references
+        (fetched only when directly referenced - never blind-probed).
+        Every candidate decision is recorded for js_coverage; scope and the
+        private-IP guard are enforced before anything is queued.
+        """
+        candidates: Set[str] = set()
+        sources = [html_text or ''] + list(inline_bodies or [])
+        joined = '\n'.join(sources)
+
+        build_ids: List[str] = []
+        for src in sources:
+            build_ids.extend(extract_nextjs_build_ids(src))
+        if len(self._nextjs_candidates) < self.max_nextjs_manifests:
+            for build_id in build_ids:
+                for cand in nextjs_manifest_candidates(page_url, build_id):
+                    if len(self._nextjs_candidates) >= self.max_nextjs_manifests:
+                        break
+                    if cand not in self._nextjs_candidates:
+                        self._nextjs_candidates.add(cand)
+                        candidates.add(cand)
+
+        # Server-only artifacts: only when the exact path is referenced here.
+        for m in NEXTJS_SERVER_ARTIFACT_RE.finditer(joined):
+            ref = urljoin(page_url, '/' + m.group(1).lstrip('/'))
+            if ref not in self._nextjs_candidates and \
+                    len(self._nextjs_candidates) < self.max_nextjs_manifests:
+                self._nextjs_candidates.add(ref)
+                candidates.add(ref)
+
+        accepted = []
+        for cand in sorted(candidates):
+            if self.scope_hosts and not self._host_in_scope(cand):
+                self._candidate_notes.append({
+                    'url': cand, 'kind': 'nextjs_manifest_candidate',
+                    'outcome': 'skipped_out_of_scope', 'status': '',
+                    'size': 0, 'ms': 0.0,
+                    'note': 'manifest candidate outside scope - not fetched'})
+                continue
+            if not self._host_allowed(cand):
+                self._candidate_notes.append({
+                    'url': cand, 'kind': 'nextjs_manifest_candidate',
+                    'outcome': 'blocked_private_host', 'status': '',
+                    'size': 0, 'ms': 0.0,
+                    'note': 'private IP-literal host outside scope'})
+                continue
+            accepted.append(cand)
+        return accepted
 
     # =================================================================
     # FRAMEWORK FINGERPRINTING
@@ -863,22 +1251,6 @@ class JSAnalyzer:
                 })
         return findings
 
-    def _detect_dom_clobbering(self, js_content: str, source_url: str,
-                               line_index: List[int]) -> List[Dict]:
-        findings = []
-        for pattern in self._compiled_clobbing:
-            for match in self._capped_finditer(pattern, js_content):
-                findings.append({
-                    'type': 'dom_clobbering',
-                    'pattern': pattern.pattern[:50],
-                    'line': self._line_of(line_index, match.start()),
-                    'context': js_content[max(0, match.start()-50):match.end()+50].strip(),
-                    'source': source_url,
-                    'severity': 'MEDIUM',
-                    'confidence': 'medium',
-                })
-        return findings
-
     def _detect_postmessage_issues(self, js_content: str, source_url: str,
                                    line_index: List[int]) -> List[Dict]:
         findings = []
@@ -910,54 +1282,6 @@ class JSAnalyzer:
                     'source': source_url,
                     'severity': severity,
                     'confidence': 'high',
-                })
-        return findings
-
-    def _detect_jsonp(self, js_content: str, source_url: str,
-                      line_index: List[int]) -> List[Dict]:
-        findings = []
-        for pattern in self._compiled_jsonp:
-            for match in self._capped_finditer(pattern, js_content):
-                findings.append({
-                    'type': 'jsonp_endpoint',
-                    'callback': match.group(1) if match.lastindex else 'unknown',
-                    'line': self._line_of(line_index, match.start()),
-                    'source': source_url,
-                    'severity': 'MEDIUM',
-                    'confidence': 'medium',
-                })
-        return findings
-
-    def _detect_dynamic_rendering(self, js_content: str, source_url: str) -> List[Dict]:
-        """One finding per engine keyword - repeats add nothing."""
-        findings = []
-        for pattern in self._compiled_rendering:
-            match = pattern.search(js_content)
-            if match:
-                findings.append({
-                    'type': 'dynamic_rendering',
-                    'engine': match.group(0).lower(),
-                    'source': source_url,
-                    'severity': 'INFO',
-                    'confidence': 'high',
-                    'note': 'Check for SSRF via dynamic rendering endpoints',
-                })
-        return findings
-
-    def _detect_csp_gadgets(self, js_content: str, source_url: str,
-                            line_index: List[int]) -> List[Dict]:
-        findings = []
-        for pattern in self._compiled_csp:
-            for match in self._capped_finditer(pattern, js_content):
-                findings.append({
-                    'type': 'csp_gadget',
-                    'pattern': pattern.pattern[:50],
-                    'line': self._line_of(line_index, match.start()),
-                    'context': js_content[max(0, match.start()-50):match.end()+50].strip(),
-                    'source': source_url,
-                    'severity': 'MEDIUM',
-                    'confidence': 'low',
-                    'note': 'May be useful for CSP bypass if strict-dynamic or unsafe-inline present',
                 })
         return findings
 
@@ -1002,7 +1326,7 @@ class JSAnalyzer:
             # a throwing UI callback (e.g. Streamlit) must never collapse the scan
             if progress_callback:
                 try:
-                    _emit(frac, msg)
+                    progress_callback(frac, msg)
                 except Exception:
                     pass
 
@@ -1014,14 +1338,12 @@ class JSAnalyzer:
             'graphql_endpoints': [],
             'websocket_endpoints': [],
             'source_map_flags': [],
+            'source_map_evidence': [],
+            'nextjs_artifacts': [],
             'frameworks': [],
             'prototype_pollution': [],
-            'dom_clobbering': [],
             'postmessage_issues': [],
             'dangerous_patterns': [],
-            'jsonp_endpoints': [],
-            'dynamic_rendering': [],
-            'csp_gadgets': [],
             'libraries': [],
             'vendor_skipped': 0,
             'timed_out_files': [],
@@ -1055,6 +1377,7 @@ class JSAnalyzer:
         discovered_chunks: Set[str] = set()
         discovered_specs: Set[str] = set()
         swagger_ui_hosts: Set[str] = set()
+        discovered_vite_manifests: Set[str] = set()
 
         # httpx already accepted these hosts regardless of cert state; aiohttp
         # must not then drop them. Invalid/self-signed certs are routine on
@@ -1068,6 +1391,17 @@ class JSAnalyzer:
             for _c, info in downloaded:
                 results['coverage'].append(info)
 
+            # Tag framework-manifest fetches by filename so js_coverage shows
+            # the discovery stage explicitly.
+            for info in results['coverage']:
+                path = urlparse(info.get('url', '')).path.lower()
+                if path.endswith(('_buildmanifest.js', '_ssgmanifest.js',
+                                  '_middlewaremanifest.js',
+                                  '_routesmanifest.json')):
+                    info['kind'] = 'nextjs_manifest'
+                elif path.endswith('manifest.json'):
+                    info['kind'] = 'vite_manifest'
+
             total_files = len(js_urls)
 
             # CPU-heavy per-file analysis runs in worker threads: the event
@@ -1077,6 +1411,7 @@ class JSAnalyzer:
             import concurrent.futures
             # Our own pool, not the loop's default one: a wedged file's thread
             # is abandoned at the end instead of being joined during teardown.
+            pool = None
             pool = concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.analysis_threads, thread_name_prefix='deepbug-js')
             loop = asyncio.get_event_loop()
@@ -1129,22 +1464,22 @@ class JSAnalyzer:
                 discovered_chunks.update(per['chunks'])
                 discovered_specs.update(per['specs'])
                 swagger_ui_hosts.update(per['ui'])
+                discovered_vite_manifests.update(per.get('vite_manifests') or ())
                 results['secrets'].extend(per['secrets'])
                 results['api_keys'].extend(per['api_keys'])
                 results['frameworks'].extend(per['frameworks'])
                 results['prototype_pollution'].extend(per['proto'])
-                results['dom_clobbering'].extend(per['clobbing'])
                 results['postmessage_issues'].extend(per['postmsg'])
                 results['dangerous_patterns'].extend(per['dangerous'])
-                results['jsonp_endpoints'].extend(per['jsonp'])
-                results['dynamic_rendering'].extend(per['rendering'])
-                results['csp_gadgets'].extend(per['csp'])
                 if per.get('library'):
                     results['libraries'].append(per['library'])
                     results['vendor_skipped'] += 1
                 results['spa_routes'].extend(per.get('routes', []))
                 results['nonprod_hosts'].extend(per.get('nonprod', []))
                 results['jwts'].extend(per.get('jwts', []))
+                # v3.7: main-pass Next.js artifacts (bundles + manifests);
+                # feeder rows are added separately by _extend_feeder_findings.
+                results['nextjs_artifacts'].extend(per.get('nextjs') or [])
                 for _pk in ('ws_protocol', 'service_workers', 'push_keys',
                             'ssrf_candidates', 'error_services', 'auth_guards', 'taint'):
                     results[_pk].extend(per.get(_pk, []))
@@ -1176,15 +1511,15 @@ class JSAnalyzer:
                 _FEEDER_MAP = {
                     'secrets': 'secrets', 'api_keys': 'api_keys',
                     'frameworks': 'frameworks', 'proto': 'prototype_pollution',
-                    'clobbing': 'dom_clobbering', 'postmsg': 'postmessage_issues',
-                    'dangerous': 'dangerous_patterns', 'jsonp': 'jsonp_endpoints',
-                    'rendering': 'dynamic_rendering', 'csp': 'csp_gadgets',
+                    'postmsg': 'postmessage_issues',
+                    'dangerous': 'dangerous_patterns',
                     'routes': 'spa_routes', 'nonprod': 'nonprod_hosts',
                     'jwts': 'jwts', 'ws_protocol': 'ws_protocol',
                     'service_workers': 'service_workers', 'push_keys': 'push_keys',
                     'ssrf_candidates': 'ssrf_candidates',
                     'error_services': 'error_services', 'auth_guards': 'auth_guards',
                     'taint': 'taint',
+                    'nextjs': 'nextjs_artifacts',
                 }
 
                 def _extend_feeder_findings(per, original_src=''):
@@ -1193,6 +1528,49 @@ class JSAnalyzer:
                             if original_src:
                                 f['original_src'] = original_src
                             results[dst_key].append(f)
+
+                # ------------------------------------------------------------
+                # v3.7: bounded Vite/Rollup manifest probing. Manifests are
+                # fetched only when referenced or on strong runtime evidence
+                # (candidate generation already enforced that); the probe
+                # count per run is capped and every outcome lands in coverage.
+                # ------------------------------------------------------------
+                if discovered_vite_manifests:
+                    if progress_callback:
+                        _emit(0.93, f"Probing {len(discovered_vite_manifests)} "
+                                    f"Vite manifest candidate(s)...")
+                    probed = 0
+                    for m_url in sorted(discovered_vite_manifests):
+                        if probed >= self.max_vite_manifest_probes:
+                            results['coverage'].append({
+                                'url': m_url, 'kind': 'vite_manifest',
+                                'outcome': 'skipped_probe_budget', 'status': '',
+                                'size': 0, 'ms': 0.0,
+                                'note': f'cap={self.max_vite_manifest_probes}'})
+                            continue
+                        probed += 1
+                        m_text, m_info = await self._download_js_with_info(
+                            session, m_url, semaphore)
+                        m_info['kind'] = 'vite_manifest'
+                        results['coverage'].append(m_info)
+                        if not m_text:
+                            continue
+                        try:
+                            data = json.loads(m_text)
+                        except Exception as exc:
+                            m_info['note'] = f'invalid_json: {type(exc).__name__}'
+                            continue
+                        entries = parse_vite_manifest(data, m_url)
+                        m_info['note'] = (f'entries={len(entries["entries"])} '
+                                          f'chunks={len(entries["chunks"])} '
+                                          f'css={len(entries["css"])} '
+                                          f'assets={len(entries["assets"])}')
+                        for js_url in entries['entries'] + entries['chunks']:
+                            # JS chunks feed the full analyzer via deep scan;
+                            # css/assets stay out of the JS pipeline entirely.
+                            if self._host_in_scope(js_url) and \
+                                    js_url.lower().endswith(_JS_ASSET_SUFFIXES):
+                                discovered_chunks.add(js_url)
 
                 seen_feeder_urls: Set[str] = set()
                 scanned_feeders = 0
@@ -1217,11 +1595,28 @@ class JSAnalyzer:
                         for m_url, m_text, m_info in entries:
                             m_info['kind'] = 'source_map'
                             results['coverage'].append(m_info)
+                            evidence = {
+                                'source_map_url': m_url[:500],
+                                'outcome': m_info.get('outcome', ''),
+                                'status': m_info.get('status', ''),
+                                'size': m_info.get('size', 0),
+                                'sources_count': 0,
+                                'sources_content_count': 0,
+                            }
                             if not m_text:
+                                results['source_map_evidence'].append(evidence)
                                 continue
                             try:
-                                _paths, pairs = unpack_sourcemap(m_text)
-                            except Exception:
+                                paths, pairs = unpack_sourcemap(m_text)
+                                evidence['sources_count'] = len(paths)
+                                evidence['sources_content_count'] = len(pairs)
+                                evidence['outcome'] = ('unpacked' if paths else
+                                                       'invalid_or_empty_map')
+                                results['source_map_evidence'].append(evidence)
+                            except Exception as exc:
+                                evidence['outcome'] = 'parse_error'
+                                evidence['note'] = f'{type(exc).__name__}: {str(exc)[:120]}'
+                                results['source_map_evidence'].append(evidence)
                                 continue
                             for path, content in pairs:
                                 if content and content.strip():
@@ -1245,7 +1640,9 @@ class JSAnalyzer:
                         scanned_feeders += 1
                         try:
                             per = await asyncio.wait_for(
-                                loop.run_in_executor(pool, self._analyze_single_file, url, content),
+                                loop.run_in_executor(
+                                    pool, self._analyze_single_file,
+                                    url, content, kind == 'map_source'),
                                 timeout=self.file_timeout)
                         except asyncio.TimeoutError:
                             results['timed_out_files'].append(url)
@@ -1365,10 +1762,11 @@ class JSAnalyzer:
                         all_reqs.extend(sanitize_endpoints(parse_openapi_spec(spec, s_url)))
 
         # Abandon any still-running analysis threads instead of joining them.
-        try:
-            pool.shutdown(wait=False)
-        except Exception:
-            pass
+        if pool is not None:
+            try:
+                pool.shutdown(wait=False)
+            except Exception:
+                pass
 
         # Global dedup across the main pass + second pass
         all_reqs = merge_endpoints(all_reqs)
@@ -1479,6 +1877,13 @@ class JSAnalyzer:
                     seen_ak.add(key)
                     unique_ak.append(k)
             results['api_keys'] = unique_ak
+
+        # v3.7: cross-source dedup of Next.js artifacts so the same action ID
+        # seen in a bundle, its chunk, a source map, and a flight payload
+        # collapses into one evidence row (highest confidence wins).
+        if results['nextjs_artifacts']:
+            results['nextjs_artifacts'] = dedupe_nextjs_artifacts(
+                results['nextjs_artifacts'])
 
         # ================================================================
         # v3.4 SECURITY LAYER (aggregate, over the merged endpoint IR)
@@ -1989,14 +2394,17 @@ class JSAnalyzer:
             return {'library': name, 'version': version or 'unknown', 'matched': matched}
         return None
 
-    def _analyze_single_file(self, url: str, js_content: str) -> Dict[str, Any]:
+    def _analyze_single_file(self, url: str, js_content: str,
+                             is_map_source: bool = False) -> Dict[str, Any]:
         """ALL per-file CPU analysis in one call - designed to run in a worker thread."""
         out = {'endpoints': [], 'maps': set(), 'chunks': set(), 'specs': set(), 'ui': set(),
-               'secrets': [], 'api_keys': [], 'frameworks': [], 'proto': [], 'clobbing': [], 'postmsg': [],
-               'dangerous': [], 'jsonp': [], 'rendering': [], 'csp': [], 'library': None,
+               'secrets': [], 'api_keys': [], 'frameworks': [], 'proto': [], 'postmsg': [],
+               'dangerous': [], 'library': None,
                'routes': [], 'nonprod': [], 'jwts': [],
                'ws_protocol': [], 'service_workers': [], 'push_keys': [],
                'ssrf_candidates': [], 'error_services': [], 'auth_guards': [], 'taint': [],
+               'nextjs': [],
+               'vite_manifests': set(),
                'file': {'url': url, 'size': len(js_content),
                         'size_human': self._human_readable_size(len(js_content))}}
 
@@ -2044,9 +2452,72 @@ class JSAnalyzer:
             smap = extract_sourcemap_url(js_content, url)
             if smap and (smap.startswith('data:') or self._host_in_scope(smap)):
                 out['maps'].add(smap)
+            # Probe {bundle}.map even when no sourceMappingURL comment exists
+            # (served-but-unreferenced .map files are a common miss - Juice Shop,
+            #  freevisit, Redbull all served main.js.map without a comment)
+            if url.startswith(('http://', 'https://')) and url.endswith('.js'):
+                probe_map = url + '.map'
+                if self._host_in_scope(probe_map):
+                    out['maps'].add(probe_map)
             for chunk in enumerate_webpack_chunks(js_content, url):
                 if self._host_in_scope(chunk):
                     out['chunks'].add(chunk)
+
+            # ---- v3.7: Next.js build/route manifest parsing. Manifests are
+            # downloaded in the MAIN pass; their lazy chunks ride the existing
+            # recursive deep-scan feeder pipeline.
+            manifest_path = urlparse(url).path.lower()
+            if manifest_path.endswith('_buildmanifest.js'):
+                parsed = parse_next_build_manifest(js_content, url)
+                for chunk in parsed['chunks']:
+                    if self._host_in_scope(chunk):
+                        out['chunks'].add(chunk)
+                for route in parsed['routes']:
+                    out['nextjs'].append({
+                        'type': 'next_route', 'value': route,
+                        'function_name': '', 'route_or_module': '',
+                        'source': url, 'extraction_method': 'build_manifest',
+                        'severity': 'INFO', 'confidence': 'high',
+                        'note': ('Route from Next.js _buildManifest.js '
+                                 '(inventory only).')})
+            elif manifest_path.endswith(('_ssgmanifest.js',
+                                         '_middlewaremanifest.js')):
+                for route in parse_next_path_set_manifest(js_content):
+                    out['nextjs'].append({
+                        'type': 'next_route', 'value': route,
+                        'function_name': '', 'route_or_module': '',
+                        'source': url, 'extraction_method':
+                            'ssg_manifest' if '_ssg' in manifest_path
+                            else 'middleware_manifest',
+                        'severity': 'INFO', 'confidence': 'medium',
+                        'note': ('Path from Next.js prerender/middleware '
+                                 'manifest (inventory only).')})
+            elif manifest_path.endswith('_routesmanifest.json'):
+                for route in parse_next_routes_manifest(js_content):
+                    out['nextjs'].append({
+                        'type': 'next_route', 'value': route,
+                        'function_name': '', 'route_or_module': '',
+                        'source': url, 'extraction_method': 'routes_manifest',
+                        'severity': 'INFO', 'confidence': 'high',
+                        'note': ('Route from Next.js _routesManifest.json '
+                                 '(inventory only).')})
+
+            # ---- v3.7: Vite/Rollup literal dynamic imports + preload dep
+            # arrays. Only JS chunks feed the analyzer; css/images/fonts are
+            # recorded but never analyzed as JavaScript.
+            vite = extract_vite_assets(js_content)
+            for rel in vite['chunks']:
+                chunk = urljoin(url, rel)
+                if self._host_in_scope(chunk) and \
+                        chunk.lower().endswith(_JS_ASSET_SUFFIXES):
+                    out['chunks'].add(chunk)
+            candidates, strong = vite_manifest_candidates(url, js_content)
+            for cand in candidates:
+                if self._host_in_scope(cand):
+                    out['vite_manifests'].add(cand)
+            if not (candidates or strong):
+                out['vite_manifests'] = set()
+
             specs, ui = find_swagger_specs(js_content, url)
             for spec_url in specs:
                 if self._host_in_scope(spec_url):
@@ -2066,12 +2537,8 @@ class JSAnalyzer:
             out['api_keys'] = []
         out['frameworks'] = self._detect_frameworks(scan, url)
         out['proto'] = self._detect_prototype_pollution(scan, url, line_index)
-        out['clobbing'] = self._detect_dom_clobbering(scan, url, line_index)
         out['postmsg'] = self._detect_postmessage_issues(scan, url, line_index)
         out['dangerous'] = self._detect_dangerous_patterns(scan, url, line_index)
-        out['jsonp'] = self._detect_jsonp(scan, url, line_index)
-        out['rendering'] = self._detect_dynamic_rendering(scan, url)
-        out['csp'] = self._detect_csp_gadgets(scan, url, line_index)
         # v3.2 advanced recon layer (capped like every other detector)
         if self.detect_routes:
             out['routes'] = self._detect_spa_routes(scan, url)
@@ -2099,7 +2566,119 @@ class JSAnalyzer:
         except Exception as e:
             logger.debug(f"js_taint scan failed for {url}: {e}")
             out['taint'] = []
+        out['nextjs'] = out['nextjs'] + self._detect_nextjs_artifacts(
+            scan, url, is_source_map_source=is_map_source)
         return out
+
+    def _detect_nextjs_artifacts(self, content: str, source_url: str,
+                                 extraction_method: str = 'bundle_regex',
+                                 is_source_map_source: bool = False) -> List[Dict]:
+        """Inventory Next.js server-action IDs and routes as test leads.
+
+        These rows are architecture evidence, never vulnerability findings.
+        Grounded in the preview.is corpus (adversis.io server-action write-up,
+        hacktricks NextJS page): action hashes map to function names only when
+        bundles/source maps retain them; the disclosure itself is not a flaw.
+        """
+        rows = []
+        seen = set()
+
+        def add(kind: str, value: str, function_name: str = '',
+                method: str = '', route_or_module: str = '',
+                confidence: Optional[str] = None):
+            if not value:
+                return
+            key = (kind, value[:128], function_name, route_or_module)
+            if key in seen:
+                return
+            seen.add(key)
+            if kind == 'next_server_action' and not confidence:
+                # A recovered function name makes the mapping defensible;
+                # a bare hash stays medium confidence either way.
+                confidence = 'medium'
+            rows.append({
+                'type': kind,
+                'value': value[:500],
+                'function_name': (function_name or '')[:200],
+                'route_or_module': (route_or_module or '')[:300],
+                'source': source_url,
+                'extraction_method': method or extraction_method,
+                'severity': 'INFO',
+                'confidence': confidence or 'medium',
+                'note': ('Inventory only; validate authorization and input handling '
+                         'through normal in-scope application workflows.'),
+            })
+
+        for pattern, method in SERVER_ACTION_PATTERNS:
+            for match in self._capped_finditer(pattern, content):
+                groups = [g for g in match.groups()]
+                if method == 'register_server_reference':
+                    fn_name = groups[0] or ''
+                    action_id = groups[1]
+                    export = groups[2] if len(groups) > 2 else ''
+                    add('next_server_action', action_id, export or fn_name,
+                        method=method, route_or_module=fn_name)
+                elif method == 'next_action_header':
+                    add('next_server_action', groups[0], method=method)
+                else:
+                    name = ''
+                    module = ''
+                    tail_groups = [g for g in groups[1:] if g]
+                    if tail_groups:
+                        candidate = tail_groups[-1]
+                        if re.match(r'^[\w./\-\[\]$@]{1,200}$', candidate) and \
+                                not candidate.startswith(('callServer', 'findSource')):
+                            if '/' in candidate or '.' in candidate:
+                                module = candidate
+                            elif re.match(r'^[A-Za-z_$][\w$]*$', candidate):
+                                name = candidate
+                    add('next_server_action', groups[0], name,
+                        method=method, route_or_module=module)
+
+        # Source maps / unminified action modules commonly retain the internal
+        # action-entry mapping: {"<id>":"functionName"}.
+        if '__next_internal_action_entry_do_not_use__' in content:
+            map_method = ('source_map_entry_map' if is_source_map_source
+                          else 'action_entry_map')
+            for match in self._capped_finditer(NEXT_ACTION_ENTRY_MAP_RE, content):
+                add('next_server_action', match.group(1), match.group(2),
+                    method=map_method, confidence='high')
+
+        # App Router flight payloads: unescape and re-run the detectors so a
+        # single implementation covers bundle and streamed evidence alike.
+        # Raw action IDs inside flight JSON are taken ONLY when an explicit
+        # server-action marker is present in the same payload.
+        if 'self.__next_f.push' in content:
+            for payload in decode_flight_payloads(content):
+                has_action_marker = bool(re.search(
+                    r'(?i)createserverreference|registerserverreference|'
+                    r'__next_internal_action_entry_do_not_use__|'
+                    r'"action"\s*:|next-action', payload))
+                for pattern, method in SERVER_ACTION_PATTERNS:
+                    for match in list(pattern.finditer(payload))[:self.max_matches]:
+                        groups = [g for g in match.groups()]
+                        if method == 'register_server_reference':
+                            add('next_server_action', groups[1],
+                                (groups[2] if len(groups) > 2 else '') or (groups[0] or ''),
+                                method=f'flight_{method}',
+                                route_or_module=groups[0] or '')
+                        elif method == 'next_action_header':
+                            add('next_server_action', groups[0],
+                                method='flight_next_action_header')
+                        else:
+                            add('next_server_action', groups[0],
+                                method=f'flight_{method}')
+                if has_action_marker:
+                    for m in list(re.finditer(r'[\'"]([a-f0-9]{32,128})[\'"]',
+                                              payload))[:self.max_matches]:
+                        add('next_server_action', m.group(1),
+                            method='flight_payload')
+
+        block = _sorted_pages_block(content)
+        if block:
+            for route in re.findall(r'[\'"](/[^\'"\\]{0,499})[\'"]', block):
+                add('next_route', route)
+        return rows
 
     def analyze_js_urls(self, js_urls: List[str],
                         progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
@@ -2113,15 +2692,42 @@ class JSAnalyzer:
                                               progress_callback: Optional[Callable] = None,
                                               validate: Optional[bool] = None) -> Dict[str, pd.DataFrame]:
         all_js_urls = []
+        # v3.7 per-run Next.js candidate state (seeds are processed
+        # sequentially below, so instance accumulation is deterministic).
+        self._nextjs_candidates = set()
+        self._candidate_notes = []
 
         _conn = aiohttp.TCPConnector(ssl=False)
         async with aiohttp.ClientSession(headers=self.headers, connector=_conn, max_line_size=65536, max_field_size=65536) as session:
-            tasks = [self._fetch_single_html_and_extract(session, url) for url in urls]
-            gathered = await asyncio.gather(*tasks)
+            # Fetch seeds sequentially here because HTML extraction records the
+            # frames belonging to the current document.  Concurrent mutation
+            # previously made iframe traversal nondeterministic.
+            gathered = []
+            frame_urls = []
+            candidate_notes: List[Dict] = []
+            for url in urls:
+                item = await self._fetch_single_html_and_extract(session, url)
+                gathered.append(item)
+                frame_urls.extend(getattr(self, '_last_frame_urls', []))
+                if self._candidate_notes:
+                    candidate_notes.extend(self._candidate_notes)
+                    self._candidate_notes = []
             list_of_lists = [g[0] for g in gathered]
             seed_coverage = [g[1] for g in gathered]
+            seed_coverage.extend(candidate_notes)
             for lst in list_of_lists:
                 all_js_urls.extend(lst)
+
+            # Crawl embedded application shells one level deep.  Treating an
+            # iframe URL as a JS URL causes the downloader to analyze HTML as
+            # JavaScript and misses every bundle referenced by that frame.
+            for frame_url in self._dedup_js_urls(frame_urls):
+                if self.scope_hosts and not self._host_in_scope(frame_url):
+                    continue
+                frame_js, frame_info = await self._fetch_single_html_and_extract(session, frame_url)
+                frame_info['kind'] = 'frame_seed'
+                seed_coverage.append(frame_info)
+                all_js_urls.extend(frame_js)
 
         # --- external discovery tools (subjs + getJS, concurrent) ---
         if (self.use_subjs or self.use_getjs) and urls:
@@ -2230,12 +2836,13 @@ class JSAnalyzer:
                 'line', 'context', 'source', 'confidence', 'entropy', 'verification'
             ])
 
-        sourcemap_rows = []
+        sourcemap_rows = list(results.get('source_map_evidence', []))
         for req in results.get('source_map_flags', []):
             sourcemap_rows.append({
                 'source_url': req.get('source_url', ''),
                 'source_map_url': req.get('url', ''),
                 'confidence': req.get('confidence', ''),
+                'outcome': 'referenced',
             })
         sourcemap_df = pd.DataFrame(sourcemap_rows)
 
@@ -2278,12 +2885,8 @@ class JSAnalyzer:
 
         frameworks_df = pd.DataFrame(results.get('frameworks', []))
         proto_df = pd.DataFrame(results.get('prototype_pollution', []))
-        clobber_df = pd.DataFrame(results.get('dom_clobbering', []))
         postmsg_df = pd.DataFrame(results.get('postmessage_issues', []))
         dangerous_df = pd.DataFrame(results.get('dangerous_patterns', []))
-        jsonp_df = pd.DataFrame(results.get('jsonp_endpoints', []))
-        rendering_df = pd.DataFrame(results.get('dynamic_rendering', []))
-        csp_df = pd.DataFrame(results.get('csp_gadgets', []))
         libraries_df = pd.DataFrame(results.get('libraries', []))
 
         # v3.2 dataframes
@@ -2327,6 +2930,11 @@ class JSAnalyzer:
         errsvc_df = pd.DataFrame(results.get('error_services', []))
         guards_df = pd.DataFrame(results.get('auth_guards', []))
         taint_df = pd.DataFrame(results.get('taint', []))
+        nextjs_df = pd.DataFrame(results.get('nextjs_artifacts', []))
+        if nextjs_df.empty:
+            nextjs_df = pd.DataFrame(columns=[
+                'type', 'value', 'function_name', 'route_or_module', 'source',
+                'extraction_method', 'severity', 'confidence', 'note'])
         for _d in (ws_proto_df, sw_df, push_df, ssrf_df2, errsvc_df, guards_df, taint_df):
             if _d.empty:
                 for _c in ('type', 'value', 'line', 'context', 'source', 'severity', 'confidence'):
@@ -2356,12 +2964,8 @@ class JSAnalyzer:
             'js_websocket_endpoints': websocket_df,
             'js_frameworks': frameworks_df,
             'js_prototype_pollution': proto_df,
-            'js_dom_clobbering': clobber_df,
             'js_postmessage_issues': postmsg_df,
             'js_dangerous_patterns': dangerous_df,
-            'js_jsonp_endpoints': jsonp_df,
-            'js_dynamic_rendering': rendering_df,
-            'js_csp_gadgets': csp_df,
             'js_libraries': libraries_df,
             'js_spa_routes': routes_df,
             'js_nonprod_hosts': nonprod_df,
@@ -2381,6 +2985,7 @@ class JSAnalyzer:
             'js_error_services': errsvc_df,
             'js_auth_guards': guards_df,
             'js_taint_candidates': taint_df,
+            'js_nextjs_artifacts': nextjs_df,
         }
 
     def _flatten_api_request(self, req: Dict) -> Dict:
@@ -2440,7 +3045,9 @@ class JSAnalyzer:
                 'type', 'service', 'key_name', 'value', 'severity',
                 'line', 'context', 'source', 'confidence', 'entropy', 'verification'
             ]),
-            'js_source_maps': pd.DataFrame(columns=['source_url', 'source_map_url', 'confidence']),
+            'js_source_maps': pd.DataFrame(columns=[
+                'source_url', 'source_map_url', 'confidence', 'outcome', 'status',
+                'size', 'sources_count', 'sources_content_count', 'note']),
             'js_priority_endpoints': pd.DataFrame(columns=[
                 'source_url', 'endpoint', 'method', 'auth', 'priority',
                 'severity', 'suspicious_indicators', 'confidence'
@@ -2455,12 +3062,8 @@ class JSAnalyzer:
             ]),
             'js_frameworks': pd.DataFrame(columns=['type', 'framework', 'version', 'source', 'severity']),
             'js_prototype_pollution': pd.DataFrame(columns=['type', 'pattern', 'line', 'context', 'source', 'severity', 'confidence']),
-            'js_dom_clobbering': pd.DataFrame(columns=['type', 'pattern', 'line', 'context', 'source', 'severity', 'confidence']),
             'js_postmessage_issues': pd.DataFrame(columns=['type', 'pattern', 'line', 'context', 'source', 'severity', 'confidence']),
             'js_dangerous_patterns': pd.DataFrame(columns=['type', 'pattern_name', 'line', 'context', 'source', 'severity', 'confidence']),
-            'js_jsonp_endpoints': pd.DataFrame(columns=['type', 'callback', 'line', 'source', 'severity', 'confidence']),
-            'js_dynamic_rendering': pd.DataFrame(columns=['type', 'engine', 'source', 'severity', 'confidence', 'note']),
-            'js_csp_gadgets': pd.DataFrame(columns=['type', 'pattern', 'line', 'context', 'source', 'severity', 'confidence', 'note']),
             'js_libraries': pd.DataFrame(columns=['type', 'library', 'version', 'matched', 'source', 'severity', 'size']),
             'js_spa_routes': pd.DataFrame(columns=['type', 'route', 'interesting', 'source', 'severity', 'note']),
             'js_nonprod_hosts': pd.DataFrame(columns=['type', 'indicator', 'host', 'source', 'severity', 'note']),
@@ -2488,6 +3091,9 @@ class JSAnalyzer:
             'js_error_services': pd.DataFrame(columns=['type', 'service', 'value', 'line', 'context', 'source', 'severity', 'confidence']),
             'js_auth_guards': pd.DataFrame(columns=['type', 'value', 'line', 'context', 'source', 'severity', 'confidence', 'note']),
             'js_taint_candidates': pd.DataFrame(columns=['type', 'sink', 'source', 'function', 'line', 'context', 'source_url', 'severity', 'confidence', 'note']),
+            'js_nextjs_artifacts': pd.DataFrame(columns=[
+                'type', 'value', 'function_name', 'route_or_module', 'source',
+                'extraction_method', 'severity', 'confidence', 'note']),
         }
 
     @staticmethod

@@ -60,6 +60,16 @@ class GraphQLSecurityProbes:
         async with session.post(endpoint, json=payload, timeout=self.timeout) as r:
             return r.status, await r.text()
 
+    @staticmethod
+    def _typename_resolved(text: str) -> bool:
+        try:
+            payload = json.loads(text)
+            return (isinstance(payload, dict) and
+                    isinstance(payload.get('data'), dict) and
+                    isinstance(payload['data'].get('__typename'), str))
+        except Exception:
+            return False
+
     async def _check_suggestions(self, session, endpoint, f):
         # a misspelled root field; a suggestion-enabled server echoes the real name.
         # NOTE: the raw JSON body escapes quotes as \"name\", so tolerate a
@@ -92,7 +102,7 @@ class GraphQLSecurityProbes:
             async with session.get(endpoint, params={"query": "{__typename}"},
                                    timeout=self.timeout) as r:
                 txt = await r.text()
-                if r.status == 200 and "__typename" in txt:
+                if r.status == 200 and self._typename_resolved(txt):
                     f["get_method_enabled"] = True
         except Exception:
             pass
@@ -105,7 +115,7 @@ class GraphQLSecurityProbes:
                 timeout=self.timeout,
             ) as r:
                 txt = await r.text()
-                if r.status == 200 and "__typename" in txt:
+                if r.status == 200 and self._typename_resolved(txt):
                     f["csrf_form_enabled"] = True
         except Exception:
             pass

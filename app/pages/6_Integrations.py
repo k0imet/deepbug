@@ -5,6 +5,7 @@
 # they are imported lazily so this page keeps working if they are not built yet.
 
 import sys
+import json
 from datetime import datetime
 from pathlib import Path
 

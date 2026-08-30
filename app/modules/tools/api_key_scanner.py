@@ -299,6 +299,8 @@ class ApiKeyScanner:
         for pat in self.entries:
             count = 0
             for match in pat['regex'].finditer(js_content):
+                if count >= self.max_matches:
+                    break
                 value = (match.group(1) if match.lastindex and match.lastindex >= 1
                          else match.group(0))
                 if not value or len(value) < 4:
@@ -313,13 +315,11 @@ class ApiKeyScanner:
                 if needs_entropy and entropy < self.min_entropy:
                     continue
 
-                count += 1
-                if count > self.max_matches:
-                    break
-
                 confidence = self._confidence(pat['service'], value, entropy)
                 if confidence == 'low':
                     continue
+
+                count += 1
 
                 line, context = self._line_context(js_content, match.start(), match.end())
                 findings.append({

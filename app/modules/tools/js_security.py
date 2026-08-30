@@ -56,6 +56,10 @@ _OIDC_PATH = re.compile(r'\.well-known/openid-configuration|\.well-known/oauth-a
 _JWKS_PATH = re.compile(r'\.well-known/jwks\.json|/jwks', re.I)
 _GRAPHQL = re.compile(r'(/graphql|/v1/graphql|graphql\s*\()', re.I)
 _ADMIN_HINT = re.compile(r'(^|/)(admin|internal|manage|management|dashboard|settings|debug|console|superuser)(/|$)', re.I)
+_SSRF_PATH = re.compile(
+    r'(fetch|proxy|redirect|callback|webhook|preview|screenshot|render|download|image)',
+    re.I,
+)
 
 _OAUTH_GRANTS = ('authorization_code', 'client_credentials', 'password',
                  'refresh_token', 'device_code', 'implicit', 'urn:ietf:params')

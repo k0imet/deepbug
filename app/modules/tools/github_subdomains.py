@@ -12,6 +12,7 @@
 # and ready to feed the dnsx resolution stage in the recon pipeline.
 
 import asyncio
+import concurrent.futures
 import os
 import re
 from typing import Dict, List, Optional, Any
@@ -135,6 +136,13 @@ class GitHubSubdomains:
 
     def scan_sync(self, apex: str,
                   scope_hosts: Optional[List[str]] = None) -> Dict[str, Any]:
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running and running.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                return ex.submit(lambda: asyncio.run(self.scan(apex, scope_hosts))).result()
         try:
             return asyncio.run(self.scan(apex, scope_hosts))
         except Exception:

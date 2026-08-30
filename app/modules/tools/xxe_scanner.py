@@ -88,6 +88,8 @@ class XXEScanner:
     async def _send(self, session, url: str, method: str, body: str):
         hdrs = {"User-Agent": _UA}
         content_type = "application/xml" if method == "POST" else None
+        if content_type:
+            hdrs['Content-Type'] = content_type
         try:
             async with session.request(method, url, headers=hdrs,
                                        data=body if method == "POST" else None,
