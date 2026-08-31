@@ -251,7 +251,7 @@ else:
                                 project_manager.save_scan_results('burp_findings', burp_target, df)
                                 st.success(f"Scan succeeded — {len(df)} findings saved as "
                                            f"`burp_findings` for `{burp_target}`.")
-                                st.dataframe(df, use_container_width=True)
+                                st.dataframe(df, width='stretch')
                         elif status_val in ('running', 'queued', 'pending', 'starting'):
                             st.info("Scan still running — check again in a bit.")
                         else:
@@ -308,7 +308,7 @@ if burp_upload is not None and target_list:
                     project_manager.save_scan_results('burp_history', burp_history_target, df)
                     st.success(f"Saved **{len(df)}** history items as `burp_history` "
                                f"for `{burp_history_target}`.")
-                    st.dataframe(df.head(50), use_container_width=True)
+                    st.dataframe(df.head(50), width='stretch')
                     st.caption(f"{len(df)} items in total — showing the first 50. "
                                "URLs are available on the Dashboard; use them with "
                                "Scanner or the Caido Replay bridge below.")
@@ -393,7 +393,7 @@ else:
             prev = pd.DataFrame([{'score': t['score'], 'status': t['status'],
                                   'category': t['category'], 'method': t['method'],
                                   'url': t['url']} for t in selection['targets']])
-            st.dataframe(prev, use_container_width=True)
+            st.dataframe(prev, width='stretch')
 
     if st.button("Send endpoints to Caido Replay", key="intg_caido_send",
                  disabled=not bool(selection.get('targets'))):
@@ -483,7 +483,7 @@ if target_list:
                         project_manager.save_scan_results('caido_history', caido_hist_target, df)
                         st.success(f"Saved **{len(df)}** history items as `caido_history` "
                                    f"for `{caido_hist_target}`.")
-                        st.dataframe(df.head(50), use_container_width=True)
+                        st.dataframe(df.head(50), width='stretch')
                         st.caption(f"{len(df)} items in total — showing the first 50.")
                 except Exception as e:
                     st.error(f"Caido history import failed: {type(e).__name__}: {e}")

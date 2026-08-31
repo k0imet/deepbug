@@ -192,7 +192,7 @@ else:
         record_count = len(data) if hasattr(data, '__len__') else 0
         st.caption(f"`{scan_type}` for `{target}` · {record_count} records")
 
-    if st.button("🔬 Run analysis", key="ai_analyze_btn", use_container_width=True):
+    if st.button("🔬 Run analysis", key="ai_analyze_btn", width='stretch'):
         with st.spinner("Analyzing..."):
             merged = dict(CONFIG)
             merged['ai'] = {**AI_DEFAULTS,

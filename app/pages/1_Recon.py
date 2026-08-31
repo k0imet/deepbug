@@ -13,6 +13,25 @@ if str(_repo_root) not in sys.path:
 
 from app.utils.url_utils import urlparse
 from urllib.parse import parse_qs
+import json as _json
+
+def _arrow_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """Make DataFrame Arrow-compatible for st.dataframe."""
+    if df is None or getattr(df, 'empty', False):
+        return df
+    try:
+        df = df.copy()
+        for col in df.columns:
+            if df[col].dtype == object:
+                sample = df[col].dropna().head(10)
+                if not sample.empty and any(isinstance(v, (dict, list)) for v in sample):
+                    df[col] = df[col].apply(lambda x: _json.dumps(x) if isinstance(x, (dict, list)) else ("" if pd.isna(x) else str(x)))
+                elif df[col].apply(lambda x: isinstance(x, str) or x == "" or pd.isna(x)).any():
+                    # Mixed int/str in 'status' etc. -> force string
+                    df[col] = df[col].astype(str).replace("nan", "")
+        return df
+    except Exception:
+        return df
 from app.modules.project_manager import ProjectManager
 from app.modules.utils import load_config, setup_logging, validate_domain, validate_ip, is_valid_url
 from app.modules.tools.subdomain_scanner import SubdomainScanner
@@ -517,7 +536,7 @@ with tab1:
             df = project_manager.load_scan_results(key, target_domain)
             if isinstance(df, pd.DataFrame) and not df.empty:
                 with st.expander(f"{label} ({len(df)})"):
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(_arrow_safe(df), width='stretch')
 
         # Takeover
         st.markdown("---")
@@ -532,7 +551,7 @@ with tab1:
                     )
                     if not takeover_df.empty:
                         st.success(f"Found {len(takeover_df)} potential takeovers!")
-                        st.dataframe(takeover_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(takeover_df), width='stretch')
                         project_manager.save_scan_results('subdomain_takeovers', target_domain, takeover_df)
                     else:
                         st.info("No takeovers detected.")
@@ -542,14 +561,14 @@ with tab1:
         takeover_df = project_manager.load_scan_results('subdomain_takeovers', target_domain)
         if isinstance(takeover_df, pd.DataFrame) and not takeover_df.empty:
             st.markdown("**Stored Takeover Findings**")
-            st.dataframe(takeover_df, use_container_width=True)
+            st.dataframe(_arrow_safe(takeover_df), width='stretch')
 
         # ---- ASN & DNS OSINT ----
         st.markdown("---")
         asn_df = project_manager.load_scan_results('asn_osint', target_domain)
         if isinstance(asn_df, pd.DataFrame) and not asn_df.empty:
             with st.expander(f"🛰️ ASN & DNS OSINT ({len(asn_df)})"):
-                st.dataframe(asn_df, use_container_width=True)
+                st.dataframe(_arrow_safe(asn_df), width='stretch')
         with st.expander("🛰️ Run ASN & DNS OSINT"):
             st.caption("Keyless passive OSINT: BGPView ASN/prefix mapping, Hackertarget reverse lookups and "
                        "DoH SPF/DMARC/DKIM/MX queries — finds origin IPs and infrastructure behind CDNs.")
@@ -584,7 +603,7 @@ with tab1:
                         if not new_asn_df.empty:
                             project_manager.save_scan_results('asn_osint', target_domain, new_asn_df)
                             st.success(f"ASN/DNS OSINT complete — {len(new_asn_df)} records ({res.get('totals', {})})")
-                            st.dataframe(new_asn_df, use_container_width=True)
+                            st.dataframe(_arrow_safe(new_asn_df), width='stretch')
                         else:
                             st.info("No ASN/DNS OSINT data returned.")
                     except Exception as e:
@@ -595,7 +614,7 @@ with tab1:
         gh_sub_df = project_manager.load_scan_results('github_subdomains', target_domain)
         if isinstance(gh_sub_df, pd.DataFrame) and not gh_sub_df.empty:
             with st.expander(f"🐙 GitHub Subdomain OSINT ({len(gh_sub_df)})"):
-                st.dataframe(gh_sub_df, use_container_width=True)
+                st.dataframe(_arrow_safe(gh_sub_df), width='stretch')
         with st.expander("🐙 Run GitHub Subdomain OSINT"):
             st.caption("Queries the public GitHub search API (repo/commit metadata) for hostnames of this apex. "
                        "No token needed; code search requires GITHUB_TOKEN.")
@@ -609,7 +628,7 @@ with tab1:
                         if not new_gh_df.empty:
                             project_manager.save_scan_results('github_subdomains', target_domain, new_gh_df)
                             st.success(f"Found {len(subs)} GitHub-derived subdomains ({res.get('sources')})")
-                            st.dataframe(new_gh_df, use_container_width=True)
+                            st.dataframe(_arrow_safe(new_gh_df), width='stretch')
                         else:
                             st.info("No subdomains found via GitHub metadata.")
                     except Exception as e:
@@ -666,7 +685,7 @@ with tab1:
                             status_ph.caption(f"✅ DONE — {len(http_results)} live hosts in "
                                               f"{_t.time() - _started:.0f}s.")
                             st.success(f"✅ {len(http_results)} live hosts saved to `live_hosts`.")
-                            st.dataframe(pd.DataFrame(http_results), use_container_width=True)
+                            st.dataframe(_arrow_safe(pd.DataFrame(http_results)), width='stretch')
                         else:
                             status_ph.caption(f"❌ DONE — 0 live hosts in {_t.time() - _started:.0f}s.")
                             st.warning("No live hosts found on the saved subdomains — "
@@ -712,7 +731,7 @@ with tab2:
                     )
                     if not ports_df.empty:
                         st.success(f"Found {len(ports_df)} open ports.")
-                        st.dataframe(ports_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(ports_df), width='stretch')
                         project_manager.save_scan_results('ports', port_target, ports_df)
                     else:
                         st.info("No open ports found.")
@@ -722,7 +741,7 @@ with tab2:
     ports_df = project_manager.load_scan_results('ports', port_target)
     if isinstance(ports_df, pd.DataFrame) and not ports_df.empty:
         st.markdown("**Stored Results**")
-        st.dataframe(ports_df, use_container_width=True)
+        st.dataframe(_arrow_safe(ports_df), width='stretch')
 
 # =====================================================================
 # TAB 3: JavaScript Analysis v3.0 (Steroids)
@@ -883,7 +902,7 @@ with tab3:
                 _cov_view = cov_df.copy()
                 if 'note' in _cov_view.columns:
                     _cov_view['note'] = _cov_view['note'].astype(str).str[:80]
-                st.dataframe(_cov_view, use_container_width=True)
+                st.dataframe(_arrow_safe(_cov_view), width='stretch')
                 st.download_button("📥 Download Coverage", cov_df.to_csv(index=False),
                                    f"{target_domain}_js_coverage.csv", "text/csv",
                                    key="dl_js_coverage")
@@ -894,7 +913,7 @@ with tab3:
 
         if _has(priority_df):
             st.markdown("#### 🔴 Priority Endpoints")
-            st.dataframe(priority_df, use_container_width=True)
+            st.dataframe(_arrow_safe(priority_df), width='stretch')
             st.download_button("📥 Download CSV", priority_df.to_csv(index=False),
                                f"{target_domain}_priority.csv", "text/csv", key="dl_js_priority")
 
@@ -919,7 +938,7 @@ with tab3:
             if 'value' in display_df.columns:
                 display_df['value'] = display_df['value'].apply(
                     lambda x: str(x)[:8] + '...' + str(x)[-4:] if len(str(x)) > 12 else x)
-            st.dataframe(display_df, use_container_width=True)
+            st.dataframe(_arrow_safe(display_df), width='stretch')
             st.download_button("📥 Download Secrets", secrets_df.to_csv(index=False),
                                f"{target_domain}_secrets.csv", "text/csv", key="dl_js_secrets")
 
@@ -927,7 +946,7 @@ with tab3:
         jwt_df = project_manager.load_scan_results('jwt_audit', target_domain)
         if _has(jwt_df):
             with st.expander(f"🔐 JWT Audit ({len(jwt_df)})"):
-                st.dataframe(jwt_df, use_container_width=True)
+                st.dataframe(_arrow_safe(jwt_df), width='stretch')
         with st.expander("🔐 Run JWT Audit"):
             st.caption("Fetches JS files and audits any JWT-looking tokens found: decodes header/payload, "
                        "flags alg=none and offline-cracks HS256 tokens against a weak-key list. "
@@ -952,7 +971,7 @@ with tab3:
                                 cracked = int((new_jwt_df['cracked_key'].astype(str) != '').sum())
                                 if cracked:
                                     st.error(f"🔑 {cracked} FORGEABLE JWT(s) — weak signing key cracked!")
-                                st.dataframe(new_jwt_df, use_container_width=True)
+                                st.dataframe(_arrow_safe(new_jwt_df), width='stretch')
                             else:
                                 st.info("No JWTs found in the fetched bodies.")
                         except Exception as e:
@@ -962,7 +981,7 @@ with tab3:
         chain_df = project_manager.load_scan_results('secret_chain', target_domain)
         if _has(chain_df):
             with st.expander(f"🔗 Secret Chain Validation ({len(chain_df)})"):
-                st.dataframe(chain_df, use_container_width=True)
+                st.dataframe(_arrow_safe(chain_df), width='stretch')
         with st.expander("🔗 Run Secret Chain Validation"):
             st.caption("Takes the top leaked-secret candidates and performs ONE read-only probe against each "
                        "provider API (GitHub/Stripe/Slack/Twilio/Google...). No writes, no brute-force.")
@@ -981,7 +1000,7 @@ with tab3:
                                 project_manager.save_scan_results('secret_chain', target_domain, new_chain_df)
                                 if verified:
                                     st.error(f"🚨 {verified} LIVE secret(s) confirmed — rotate immediately!")
-                                st.dataframe(new_chain_df, use_container_width=True)
+                                st.dataframe(_arrow_safe(new_chain_df), width='stretch')
                             else:
                                 st.info("No secrets had a matching validation chain.")
                         except Exception as e:
@@ -991,7 +1010,7 @@ with tab3:
             st.markdown("#### ☠️ Dangerous Patterns")
             if 'pattern_name' in dangerous_df.columns:
                 st.bar_chart(dangerous_df['pattern_name'].value_counts())
-            st.dataframe(dangerous_df, use_container_width=True)
+            st.dataframe(_arrow_safe(dangerous_df), width='stretch')
 
         if not any(_has(d) for d in (secrets_df, dangerous_df)):
             st.info("No secrets or dangerous patterns found yet.")
@@ -1004,12 +1023,12 @@ with tab3:
             for idx, row in proto_df.head(10).iterrows():
                 st.markdown(f"**Line {row.get('line', '?')}**: `{row.get('context', '')[:100]}...`")
                 st.caption(f"Pattern: {row.get('pattern', '')}")
-            st.dataframe(proto_df, use_container_width=True)
+            st.dataframe(_arrow_safe(proto_df), width='stretch')
 
         if _has(postmsg_df):
             st.markdown("#### 📨 PostMessage Issues")
             st.error("🚨 Handlers without `event.origin` validation - cross-origin data theft risk.")
-            st.dataframe(postmsg_df, use_container_width=True)
+            st.dataframe(_arrow_safe(postmsg_df), width='stretch')
 
         if not any(_has(d) for d in (proto_df, postmsg_df)):
             st.info("No client-side vectors found yet.")
@@ -1073,8 +1092,7 @@ with tab3:
                          'source_url']
             cols = [c for c in preferred if c in view.columns]
             cols += [c for c in view.columns if c not in cols]  # keep any extras
-            st.dataframe(
-                view[cols], use_container_width=True, hide_index=True,
+            st.dataframe(_arrow_safe(view[cols]), width='stretch', hide_index=True,
                 column_config={
                     'endpoint': st.column_config.TextColumn('Endpoint', width='large'),
                     'method': st.column_config.TextColumn('Method', width='small'),
@@ -1091,14 +1109,14 @@ with tab3:
                                f"{target_domain}_endpoints.csv", "text/csv", key="dl_js_endpoints")
         if _has(graphql_df):
             st.markdown(f"#### 🧬 GraphQL ({len(graphql_df)})")
-            st.dataframe(graphql_df, use_container_width=True)
+            st.dataframe(_arrow_safe(graphql_df), width='stretch')
         if _has(ws_df):
             st.markdown(f"#### 📡 WebSockets ({len(ws_df)})")
-            st.dataframe(ws_df, use_container_width=True)
+            st.dataframe(_arrow_safe(ws_df), width='stretch')
         if _has(maps_df):
             st.markdown(f"#### 🗺️ Source Maps ({len(maps_df)})")
             st.warning("Source maps may contain original source code and hardcoded secrets.")
-            st.dataframe(maps_df, use_container_width=True)
+            st.dataframe(_arrow_safe(maps_df), width='stretch')
         if not any(_has(d) for d in (endpoints_df, graphql_df, ws_df, maps_df)):
             st.info("No endpoints discovered yet.")
 
@@ -1138,7 +1156,7 @@ with tab3:
                         c2.metric("⚠️ Potential", len(potential))
                         if not confirmed.empty:
                             st.error(f"🚨 Object.prototype pollution CONFIRMED on {len(confirmed)} vector(s)!")
-                        st.dataframe(pp_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(pp_df), width='stretch')
                         project_manager.save_scan_results('pp_validation', target_domain, pp_df)
                         st.download_button("📥 Download PP Results", pp_df.to_csv(index=False),
                                            f"{target_domain}_pp_validation.csv", "text/csv", key="dl_pp")
@@ -1150,7 +1168,7 @@ with tab3:
         pp_df = project_manager.load_scan_results('pp_validation', target_domain)
         if _has(pp_df):
             with st.expander(f"Stored PP Validation Results ({len(pp_df)})"):
-                st.dataframe(pp_df, use_container_width=True)
+                st.dataframe(_arrow_safe(pp_df), width='stretch')
 
     # ================= ACTIVE VALIDATION SUB-TABS =================
     # Stored results first; a collapsible run block per validator.
@@ -1167,7 +1185,7 @@ with tab3:
             stored_df = project_manager.load_scan_results(_key, target_domain)
             if _has(stored_df):
                 with st.expander(f"Stored {_label} Validation Results ({len(stored_df)})"):
-                    st.dataframe(stored_df, use_container_width=True)
+                    st.dataframe(_arrow_safe(stored_df), width='stretch')
             with st.expander(f"🧪 Run {_label} Validation"):
                 custom_val_urls = st.text_area("Custom URLs (one per line, optional):",
                                                height=80, key=f"{_key}_custom_urls")
@@ -1200,7 +1218,7 @@ with tab3:
                                     vc2.metric("⚠️ Probable/Potential", probable)
                                     if confirmed:
                                         st.error(f"🚨 {confirmed} {_label} issue(s) CONFIRMED - verify manually!")
-                                    st.dataframe(val_df, use_container_width=True)
+                                    st.dataframe(_arrow_safe(val_df), width='stretch')
                                     st.download_button("📥 Download Results", val_df.to_csv(index=False),
                                                        f"{target_domain}_{_key}.csv", "text/csv",
                                                        key=f"dl_{_key}")
@@ -1245,7 +1263,7 @@ with tab3:
                             n_high = int((bm_df['severity'].astype(str).isin(['HIGH', 'CRITICAL'])).sum())
                             st.error(f"🪙 {len(mint_findings)} mint finding(s) — {n_high} HIGH/CRITICAL. "
                                      "Verify token replay manually before reporting.")
-                            st.dataframe(bm_df, use_container_width=True)
+                            st.dataframe(_arrow_safe(bm_df), width='stretch')
                             st.download_button("📥 Download", bm_df.to_csv(index=False),
                                                f"{target_domain}_bearer_mint.csv",
                                                "text/csv", key="dl_bearer_mint")
@@ -1258,7 +1276,7 @@ with tab3:
         bm_stored = project_manager.load_scan_results('bearer_mint_results', target_domain)
         if isinstance(bm_stored, pd.DataFrame) and not bm_stored.empty:
             with st.expander(f"Stored Bearer Mint Findings ({len(bm_stored)})"):
-                st.dataframe(bm_stored, use_container_width=True)
+                st.dataframe(_arrow_safe(bm_stored), width='stretch')
 
     # ================= API KEYS (precise keyhacks corpus) =================
     with js_sub7:
@@ -1290,7 +1308,7 @@ with tab3:
             if 'verification' in ak_view.columns:
                 ak_view['verification'] = ak_view['verification'].apply(
                     lambda x: str(x)[:120] + ('...' if len(str(x)) > 120 else ''))
-            st.dataframe(ak_view, use_container_width=True)
+            st.dataframe(_arrow_safe(ak_view), width='stretch')
             st.download_button("📥 Download API Keys", api_df.to_csv(index=False),
                                f"{target_domain}_api_keys.csv", "text/csv", key="dl_js_api_keys")
 
@@ -1351,7 +1369,7 @@ with tab3:
                                 project_manager.save_scan_results('js_api_keys', target_domain, ak_new_df)
                                 n_crit = int((ak_new_df['severity'].astype(str) == 'CRITICAL').sum())
                                 st.error(f"🔑 {len(scanned)} API key(s) found — {n_crit} CRITICAL. Verify manually!")
-                                st.dataframe(ak_new_df, use_container_width=True)
+                                st.dataframe(_arrow_safe(ak_new_df), width='stretch')
                             else:
                                 n_src = len(ak_cached) if ak_cached else len(ak_urls)
                                 st.info(f"No API keys found across {n_src} JS file(s).")
@@ -1389,7 +1407,7 @@ with tab3:
                                 rows = [{'service': s, 'value': v} for s, v in cand]
                                 results = verifier.verify_batch(rows)
                                 v_df = pd.DataFrame(results)
-                                st.dataframe(v_df, use_container_width=True)
+                                st.dataframe(_arrow_safe(v_df), width='stretch')
                                 live = v_df[v_df['status'] == 'live'] if 'status' in v_df else pd.DataFrame()
                                 if not live.empty:
                                     st.error(f"⚠️ {len(live)} **live credential(s)** confirmed — "
@@ -1431,7 +1449,7 @@ with tab3:
                                     'objects', 'security_signals', 'interest_score',
                                     'function', 'source_url') if c in df.columns]
                 with st.expander(f"{title} ({len(df)})"):
-                    st.dataframe(df[cols], use_container_width=True)
+                    st.dataframe(_arrow_safe(df[cols]), width='stretch')
             _show_cand(idor_df, "🆔 IDOR / multi-tenant object references")
             _show_cand(ssrf_df, "🧐 SSRF / server-side fetch candidates")
             _show_cand(up_df, "📤 File-upload surfaces")
@@ -1448,7 +1466,7 @@ with tab3:
                                     'client_secret_exposed', 'secret_component',
                                     'audience', 'scopes', 'redirect_uri', 'pkce')
                         if c in oa.columns]
-                st.dataframe(oa[cols], use_container_width=True)
+                st.dataframe(_arrow_safe(oa[cols]), width='stretch')
             if _exp_sec.any():
                 st.error(f"⚠️ {int(_exp_sec.sum())} OAuth client secret(s) exposed in client-side JS — "
                          "credentials live in the browser, treat as public.")
@@ -1463,7 +1481,7 @@ with tab3:
                            "passive observations only — no forgery, no replay.")
                 cols = [c for c in ('alg', 'issuer', 'audience', 'subject', 'scopes',
                                     'flags', 'related_hosts', 'source') if c in jc.columns]
-                st.dataframe(jc[cols], use_container_width=True)
+                st.dataframe(_arrow_safe(jc[cols]), width='stretch')
         else:
             st.caption("JWT correlation: run JS Analysis.")
 
@@ -1475,7 +1493,7 @@ with tab3:
                            "**Candidates for manual review** — not exploitability.")
                 cols = [c for c in ('sink', 'source', 'function', 'confidence', 'line', 'context', 'source_url')
                         if c in tc.columns]
-                st.dataframe(tc[cols], use_container_width=True)
+                st.dataframe(_arrow_safe(tc[cols]), width='stretch')
         else:
             st.caption("DOM XSS taint candidates: run JS Analysis.")
 
@@ -1485,27 +1503,27 @@ with tab3:
                 st.caption("Client-side role/permission checks — **verify the API enforces them server-side** "
                            "(classic authz-bypass lead).")
                 cols = [c for c in ('type', 'value', 'line', 'source') if c in gc.columns]
-                st.dataframe(gc[cols], use_container_width=True)
+                st.dataframe(_arrow_safe(gc[cols]), width='stretch')
 
         wp = _load_js('js_ws_protocol', 'js_ws_protocol')
         if isinstance(wp, pd.DataFrame) and not wp.empty:
             with st.expander(f"🔌 WebSocket protocol ({len(wp)})"):
                 cols = [c for c in ('type', 'event', 'line', 'source', 'severity') if c in wp.columns]
-                st.dataframe(wp[cols], use_container_width=True)
+                st.dataframe(_arrow_safe(wp[cols]), width='stretch')
 
         ssc = _load_js('js_ssrf_candidates', 'js_ssrf_candidates')
         if isinstance(ssc, pd.DataFrame) and not ssc.empty:
             with st.expander(f"🧭 SSRF / metadata candidates ({len(ssc)})"):
                 cols = [c for c in ('type', 'value', 'severity', 'confidence', 'note', 'source')
                         if c in ssc.columns]
-                st.dataframe(ssc[cols], use_container_width=True)
+                st.dataframe(_arrow_safe(ssc[cols]), width='stretch')
 
         esc = _load_js('js_error_services', 'js_error_services')
         if isinstance(esc, pd.DataFrame) and not esc.empty:
             with st.expander(f"📡 Error/infra services ({len(esc)})"):
                 st.caption("Sentry DSNs are redacted (key shape only).")
                 cols = [c for c in ('service', 'type', 'value', 'source') if c in esc.columns]
-                st.dataframe(esc[cols], use_container_width=True)
+                st.dataframe(_arrow_safe(esc[cols]), width='stretch')
 
         sw = _load_js('js_service_workers', 'js_service_workers')
         pk = _load_js('js_push_keys', 'js_push_keys')
@@ -1515,10 +1533,10 @@ with tab3:
             with st.expander(f"🛠️ Service workers & push ({int(hsw)*len(sw) if hsw else 0} sw / {int(hpk)*len(pk) if hpk else 0} push)"):
                 if hsw:
                     cols = [c for c in ('type', 'value', 'note', 'source') if c in sw.columns]
-                    st.dataframe(sw[cols], use_container_width=True)
+                    st.dataframe(_arrow_safe(sw[cols]), width='stretch')
                 if hpk:
                     cols = [c for c in ('type', 'value', 'source') if c in pk.columns]
-                    st.dataframe(pk[cols], use_container_width=True)
+                    st.dataframe(_arrow_safe(pk[cols]), width='stretch')
 
         # ---- OIDC config ----
         oidc = _load_js('js_oidc_config', 'js_oidc_config')
@@ -1552,11 +1570,11 @@ with tab3:
                     st.markdown("#### Hosts")
                     cols = [c for c in ('host', 'endpoints', 'oauth', 'accepts', 'referenced_by')
                             if c in hosts_df2.columns]
-                    st.dataframe(hosts_df2[cols], use_container_width=True)
+                    st.dataframe(_arrow_safe(hosts_df2[cols]), width='stretch')
                 if rr:
                     st.markdown("#### Auth / cross-domain relationships")
                     cols = [c for c in ('from', 'to', 'via', 'auth') if c in rel_df2.columns]
-                    st.dataframe(rel_df2[cols], use_container_width=True)
+                    st.dataframe(_arrow_safe(rel_df2[cols]), width='stretch')
                 if hh:
                     st.markdown("#### Host adjacency")
                     st.code('\n'.join(
@@ -1652,7 +1670,7 @@ with tab4:
         df = project_manager.load_scan_results(key, target_domain)
         if isinstance(df, pd.DataFrame) and not df.empty:
             with st.expander(f"{label} ({len(df)})"):
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(_arrow_safe(df), width='stretch')
                 csv = df.to_csv(index=False)
                 st.download_button(f"📥 {label}", csv, f"{target_domain}_{key}.csv", "text/csv", key=f"dl_{key}")
 
@@ -1693,7 +1711,7 @@ with tab4:
                             c2.metric("🔥 HIGH", high)
                             c3.metric("Total", len(kxss_results))
 
-                            st.dataframe(kxss_results, use_container_width=True)
+                            st.dataframe(_arrow_safe(kxss_results), width='stretch')
                             csv = kxss_results.to_csv(index=False)
                             st.download_button("📥 Download kxss Results", csv, f"{target_domain}_kxss.csv", "text/csv")
                         else:
@@ -1706,7 +1724,7 @@ with tab4:
     kxss_df_stored = project_manager.load_scan_results('kxss_confirmed_xss', target_domain)
     if isinstance(kxss_df_stored, pd.DataFrame) and not kxss_df_stored.empty:
         with st.expander(f"Stored kxss Findings ({len(kxss_df_stored)})"):
-            st.dataframe(kxss_df_stored, use_container_width=True)
+            st.dataframe(_arrow_safe(kxss_df_stored), width='stretch')
 
     # CSTI/SSTI Confirmation (Beyond XSS ch.15) - same candidate pool as kxss
     st.markdown("---")
@@ -1741,7 +1759,7 @@ with tab4:
                             st.error(f"🚨 Template injection CONFIRMED on {len(confirmed)} endpoint(s)!")
                             for _, r in confirmed.head(5).iterrows():
                                 st.markdown(f"- `{r['URL']}` param `{r['Parameter']}` → engine: **{r['Engine']}**")
-                        st.dataframe(csti_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(csti_df), width='stretch')
                         project_manager.save_scan_results('csti_findings', target_domain, csti_df)
                         st.download_button("📥 Download CSTI Results", csti_df.to_csv(index=False),
                                            f"{target_domain}_csti.csv", "text/csv", key="dl_csti")
@@ -1755,7 +1773,7 @@ with tab4:
     csti_df = project_manager.load_scan_results('csti_findings', target_domain)
     if isinstance(csti_df, pd.DataFrame) and not csti_df.empty:
         with st.expander(f"Stored CSTI Results ({len(csti_df)})"):
-            st.dataframe(csti_df, use_container_width=True)
+            st.dataframe(_arrow_safe(csti_df), width='stretch')
 
     # ---- Sensitive Config Exposure ----
     st.markdown("---")
@@ -1763,7 +1781,7 @@ with tab4:
     cfg_sens_df = project_manager.load_scan_results('config_sensitive', target_domain)
     if isinstance(cfg_sens_df, pd.DataFrame) and not cfg_sens_df.empty:
         with st.expander(f"Stored Config Exposure Results ({len(cfg_sens_df)})"):
-            st.dataframe(cfg_sens_df, use_container_width=True)
+            st.dataframe(_arrow_safe(cfg_sens_df), width='stretch')
     with st.expander("⚙️ Run Sensitive Config Exposure"):
         st.caption("Probes actuator/env/.env/swagger paths on live origins — a row becomes a finding only "
                    "with hard evidence markers in the body (propertySources, sensitive KEY=value...).")
@@ -1789,7 +1807,7 @@ with tab4:
                             findings = len(res.get('findings', []))
                             if findings:
                                 st.error(f"🚨 {findings} evidence-backed exposure(s) found!")
-                            st.dataframe(new_cfg_df, use_container_width=True)
+                            st.dataframe(_arrow_safe(new_cfg_df), width='stretch')
                         else:
                             st.info("No config endpoints probed.")
                     except Exception as e:
@@ -1801,7 +1819,7 @@ with tab4:
     or_df = project_manager.load_scan_results('open_redirect_candidates', target_domain)
     if isinstance(or_df, pd.DataFrame) and not or_df.empty:
         with st.expander(f"Stored Open Redirect Candidates ({len(or_df)})"):
-            st.dataframe(or_df, use_container_width=True)
+            st.dataframe(_arrow_safe(or_df), width='stretch')
     with st.expander("↩️ Run Open Redirect Scan"):
         st.caption(f"Swaps redirect-style param values with the canary host `{open_redirect_scanner.canary}` "
                    "and flags any response that echoes it — passive, in-scope only.")
@@ -1813,7 +1831,7 @@ with tab4:
                     if not new_or_df.empty:
                         project_manager.save_scan_results('open_redirect_candidates', target_domain, new_or_df)
                         st.success(f"Found {len(new_or_df)} open-redirect candidates!")
-                        st.dataframe(new_or_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(new_or_df), width='stretch')
                     else:
                         st.info(f"No redirect candidates on {res.get('totals', {}).get('urls', 0)} tested URLs.")
                 except Exception as e:
@@ -1825,7 +1843,7 @@ with tab4:
     git_df = project_manager.load_scan_results('git_disclosure', target_domain)
     if isinstance(git_df, pd.DataFrame) and not git_df.empty:
         with st.expander(f"Stored Git Disclosure Results ({len(git_df)})"):
-            st.dataframe(git_df, use_container_width=True)
+            st.dataframe(_arrow_safe(git_df), width='stretch')
     with st.expander("🗂️ Run Git Disclosure Scan"):
         st.caption("Probes `/.git/HEAD` on each base origin and walks the commit/tree/blob chain to pull "
                    "high-value files (.env, credentials, keys) — a limited git-dumper-lite.")
@@ -1853,7 +1871,7 @@ with tab4:
                         if exposed:
                             st.error(f"🚨 {exposed} exposed .git repository(ies) — full source disclosure!")
                         st.success(f"Git disclosure scan complete: {res.get('totals', {})}")
-                        st.dataframe(new_git_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(new_git_df), width='stretch')
                     else:
                         st.info("No git disclosure findings.")
                 except Exception as e:
@@ -1879,7 +1897,7 @@ with tab5:
                     for provider, findings in results.items():
                         if findings:
                             st.markdown(f"**{provider.upper()}** ({len(findings)})")
-                            st.dataframe(pd.DataFrame(findings), use_container_width=True)
+                            st.dataframe(_arrow_safe(pd.DataFrame(findings)), width='stretch')
                             project_manager.save_scan_results(f"cloud_{provider}", target_domain, pd.DataFrame(findings))
                 else:
                     st.info("No cloud resources found.")
@@ -1890,7 +1908,7 @@ with tab5:
         df = project_manager.load_scan_results(f"cloud_{provider}", target_domain)
         if isinstance(df, pd.DataFrame) and not df.empty:
             with st.expander(f"{provider.upper()} ({len(df)})"):
-                st.dataframe(df, use_container_width=True)
+                st.dataframe(_arrow_safe(df), width='stretch')
 
 # =====================================================================
 # TAB 6: Parameter Mining
@@ -1953,7 +1971,7 @@ with tab6:
                         urls_df = urls_df[urls_df['URL'].isin(in_scope_urls)].reset_index(drop=True)
                         project_manager.save_scan_results('collected_urls', target_domain, urls_df)
                         st.success(f"Collected {len(urls_df)} unique URLs.")
-                        st.dataframe(urls_df.head(200), use_container_width=True)
+                        st.dataframe(_arrow_safe(urls_df.head(200)), width='stretch')
                     else:
                         st.info("No URLs collected (tools missing or archives empty).")
                 except Exception as e:
@@ -2058,7 +2076,7 @@ with tab6:
                                 'Tool': p.get('tool', ''),
                             })
                     df = pd.DataFrame(rows)
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(_arrow_safe(df), width='stretch')
                     st.caption("`Injection` = where the parameter lives (Path/Query/Body/Header) · `Reason` = why x8 flagged it "
                                "(e.g. Reflected, status/size delta). Copy the URL into Burp/Caido to validate.")
                     project_manager.save_scan_results('param_miner', target_domain, df)
@@ -2114,7 +2132,7 @@ with tab6:
                                      expanded=not results):
                         st.caption("Each row shows the exact archived URL the parameter was seen on - paste it into "
                                    "Burp/Caido or feed to GF/kxss. Also saved to disk for the Vulnerability Detection tab.")
-                        st.dataframe(hist_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(hist_df), width='stretch')
                         st.download_button("📥 Download historical params (URL + param)",
                                            hist_df.to_csv(index=False),
                                            f"{target_domain}_historical_params.csv", "text/csv", key="dl_hist_params")
@@ -2136,12 +2154,12 @@ with tab6:
     df = project_manager.load_scan_results('param_miner', target_domain)
     if isinstance(df, pd.DataFrame) and not df.empty:
         with st.expander(f"Stored Results ({len(df)})"):
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(_arrow_safe(df), width='stretch')
 
     hist_df = project_manager.load_scan_results('param_miner_historical', target_domain)
     if isinstance(hist_df, pd.DataFrame) and not hist_df.empty:
         with st.expander(f"🕰️ Stored Historical URLs ({len(hist_df)})"):
-            st.dataframe(hist_df, use_container_width=True)
+            st.dataframe(_arrow_safe(hist_df), width='stretch')
 
 # =====================================================================
 # TAB 7: Security Headers (CORS + Headers merged)
@@ -2180,7 +2198,7 @@ with tab7:
                         })
                 if rows:
                     df = pd.DataFrame(rows)
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(_arrow_safe(df), width='stretch')
                     project_manager.save_scan_results('cors_headers', target_domain, df)
                     misconfigured = df[df['CORS Misconfigured'] == True]
                     if not misconfigured.empty:
@@ -2193,7 +2211,7 @@ with tab7:
     df = project_manager.load_scan_results('cors_headers', target_domain)
     if isinstance(df, pd.DataFrame) and not df.empty:
         with st.expander(f"Stored Results ({len(df)})"):
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(_arrow_safe(df), width='stretch')
 
 # =====================================================================
 # TAB 8: Advanced Scans (GraphQL + IDOR + Dependency Confusion)
@@ -2236,7 +2254,7 @@ with tab8:
                 results = graphql_scanner.scan(urls, progress_callback=lambda p, m: progress.progress(p, m))
                 if results['endpoints']:
                     st.success(f"Found {len(results['endpoints'])} GraphQL endpoints.")
-                    st.dataframe(pd.DataFrame({'Endpoint': results['endpoints']}), use_container_width=True)
+                    st.dataframe(_arrow_safe(pd.DataFrame({'Endpoint': results['endpoints']})), width='stretch')
                     project_manager.save_scan_results('graphql_endpoints', target_domain, pd.DataFrame({'Endpoint': results['endpoints']}))
 
                 if results['schemas']:
@@ -2305,7 +2323,7 @@ with tab8:
     graphql_stored = project_manager.load_scan_results('graphql_endpoints', target_domain)
     if isinstance(graphql_stored, pd.DataFrame) and not graphql_stored.empty:
         with st.expander(f"Stored GraphQL Endpoints ({len(graphql_stored)})"):
-            st.dataframe(graphql_stored, use_container_width=True)
+            st.dataframe(_arrow_safe(graphql_stored), width='stretch')
 
     gql_sec_stored = project_manager.load_scan_results('graphql_security', target_domain)
     if isinstance(gql_sec_stored, pd.DataFrame) and not gql_sec_stored.empty:
@@ -2391,7 +2409,7 @@ with tab8:
                         n_high = int((rv_df['severity'].astype(str) == 'HIGH').sum())
                         st.error(f"🚨 {len(findings)} injection candidate(s) — {n_high} HIGH. "
                                  "Verify manually before reporting.")
-                        st.dataframe(rv_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(rv_df), width='stretch')
                         st.download_button("📥 Download", rv_df.to_csv(index=False),
                                            f"{target_domain}_live_validation.csv",
                                            "text/csv", key="dl_rv")
@@ -2405,7 +2423,7 @@ with tab8:
     rv_stored = project_manager.load_scan_results('live_validation_results', target_domain)
     if isinstance(rv_stored, pd.DataFrame) and not rv_stored.empty:
         with st.expander(f"Stored REST Validation Results ({len(rv_stored)})"):
-            st.dataframe(rv_stored, use_container_width=True)
+            st.dataframe(_arrow_safe(rv_stored), width='stretch')
 
     st.markdown("---")
     st.markdown("### 🔐 IDOR / BOLA Scanner")
@@ -2463,7 +2481,7 @@ with tab8:
                     idor_df = idor_scanner.scan(urls, progress_callback=lambda p, m: progress.progress(p, m))
                     if not idor_df.empty:
                         st.success(f"Found {len(idor_df)} potential IDOR vulnerabilities.")
-                        st.dataframe(idor_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(idor_df), width='stretch')
                         project_manager.save_scan_results('idor_findings', target_domain, idor_df)
                     else:
                         st.info("No IDOR detected.")
@@ -2475,7 +2493,7 @@ with tab8:
     idor_stored = project_manager.load_scan_results('idor_findings', target_domain)
     if isinstance(idor_stored, pd.DataFrame) and not idor_stored.empty:
         with st.expander(f"Stored IDOR Findings ({len(idor_stored)})"):
-            st.dataframe(idor_stored, use_container_width=True)
+            st.dataframe(_arrow_safe(idor_stored), width='stretch')
 
     # Dependency Confusion
     st.markdown("---")
@@ -2494,7 +2512,7 @@ with tab8:
                     dep_df = dependency_scanner.scan(dep_urls, progress_callback=lambda p, m: progress.progress(p, m))
                     if not dep_df.empty:
                         st.success(f"Found {len(dep_df)} potential dependency confusion risks.")
-                        st.dataframe(dep_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(dep_df), width='stretch')
                         project_manager.save_scan_results('dependency_confusion', target_domain, dep_df)
                     else:
                         st.info("No risks found.")
@@ -2506,7 +2524,7 @@ with tab8:
     dep_stored = project_manager.load_scan_results('dependency_confusion', target_domain)
     if isinstance(dep_stored, pd.DataFrame) and not dep_stored.empty:
         with st.expander(f"Stored Dependency Confusion Results ({len(dep_stored)})"):
-            st.dataframe(dep_stored, use_container_width=True)
+            st.dataframe(_arrow_safe(dep_stored), width='stretch')
 
     # Supply Chain / SRI Audit
     st.markdown("---")
@@ -2540,7 +2558,7 @@ with tab8:
                         c3.metric("Total risks", len(sc_df))
                         if crit:
                             st.error(f"🚨 {crit} CRITICAL supply-chain exposure(s) - known-hostile CDN!")
-                        st.dataframe(sc_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(sc_df), width='stretch')
                         project_manager.save_scan_results('supply_chain', target_domain, sc_df)
                         st.download_button("📥 Download Results", sc_df.to_csv(index=False),
                                            f"{target_domain}_supply_chain.csv", "text/csv", key="dl_sc")
@@ -2554,7 +2572,7 @@ with tab8:
     sc_df = project_manager.load_scan_results('supply_chain', target_domain)
     if isinstance(sc_df, pd.DataFrame) and not sc_df.empty:
         with st.expander(f"Stored Supply Chain Results ({len(sc_df)})"):
-            st.dataframe(sc_df, use_container_width=True)
+            st.dataframe(_arrow_safe(sc_df), width='stretch')
 
     # Mass Assignment & Type Juggling
     st.markdown("---")
@@ -2587,7 +2605,7 @@ with tab8:
                         high = len(ma_df[ma_df['Severity'] == 'HIGH'])
                         if high:
                             st.error(f"🚨 {high} HIGH severity mass-assignment lead(s) - verify manually!")
-                        st.dataframe(ma_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(ma_df), width='stretch')
                         project_manager.save_scan_results('mass_assignment', target_domain, ma_df)
                         st.download_button("📥 Download Results", ma_df.to_csv(index=False),
                                            f"{target_domain}_mass_assignment.csv", "text/csv", key="dl_ma")
@@ -2601,7 +2619,7 @@ with tab8:
     ma_df = project_manager.load_scan_results('mass_assignment', target_domain)
     if isinstance(ma_df, pd.DataFrame) and not ma_df.empty:
         with st.expander(f"Stored Mass Assignment Results ({len(ma_df)})"):
-            st.dataframe(ma_df, use_container_width=True)
+            st.dataframe(_arrow_safe(ma_df), width='stretch')
 
     # ---- Auth Gateway Probes ----
     st.markdown("---")
@@ -2611,7 +2629,7 @@ with tab8:
     ag_df = project_manager.load_scan_results('auth_gateway', target_domain)
     if isinstance(ag_df, pd.DataFrame) and not ag_df.empty:
         with st.expander(f"Stored Auth Gateway Probes ({len(ag_df)})"):
-            st.dataframe(ag_df, use_container_width=True)
+            st.dataframe(_arrow_safe(ag_df), width='stretch')
     ag_urls = []
     ag_live = project_manager.load_scan_results('live_hosts', target_domain)
     if isinstance(ag_live, pd.DataFrame) and 'URL' in ag_live.columns:
@@ -2632,7 +2650,7 @@ with tab8:
                     project_manager.save_scan_results('auth_gateway', target_domain, new_ag_df)
                     alive = int(new_ag_df['alive'].sum())
                     st.success(f"{len(new_ag_df)} responding endpoint(s), {alive} alive")
-                    st.dataframe(new_ag_df, use_container_width=True)
+                    st.dataframe(_arrow_safe(new_ag_df), width='stretch')
                 else:
                     st.info("No legacy endpoints answered.")
             except Exception as e:
@@ -2646,7 +2664,7 @@ with tab8:
     b403_df = project_manager.load_scan_results('bypass403', target_domain)
     if isinstance(b403_df, pd.DataFrame) and not b403_df.empty:
         with st.expander(f"Stored 403 Bypass Results ({len(b403_df)})"):
-            st.dataframe(b403_df, use_container_width=True)
+            st.dataframe(_arrow_safe(b403_df), width='stretch')
     b403_urls = []
     for scan_type in ['js_discovered_endpoints', 'live_hosts', 'param_miner']:
         df = project_manager.load_scan_results(scan_type, target_domain)
@@ -2681,7 +2699,7 @@ with tab8:
                         project_manager.save_scan_results('bypass403', target_domain, new_b403_df)
                         st.success(f"Found {len(new_b403_df)} bypass technique(s) on "
                                    f"{res.get('totals', {}).get('bypassed_urls', 0)} URL(s)!")
-                        st.dataframe(new_b403_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(new_b403_df), width='stretch')
                     else:
                         st.info("No 403 bypasses found.")
                 except Exception as e:
@@ -2695,7 +2713,7 @@ with tab8:
     gl_df = project_manager.load_scan_results('github_leaks', target_domain)
     if isinstance(gl_df, pd.DataFrame) and not gl_df.empty:
         with st.expander(f"Stored GitHub Leaks ({len(gl_df)})"):
-            st.dataframe(gl_df, use_container_width=True)
+            st.dataframe(_arrow_safe(gl_df), width='stretch')
     if st.button("🐙 Run GitHub Leak Search", key="github_leaks_run"):
         with st.spinner("Dorking GitHub (can take ~1 min)..."):
             try:
@@ -2705,7 +2723,7 @@ with tab8:
                     project_manager.save_scan_results('github_leaks', target_domain, new_gl_df)
                     st.success(f"Found {len(new_gl_df)} leak candidate(s) — "
                                f"{res.get('totals', {}).get('secrets', 0)} secrets sniffed")
-                    st.dataframe(new_gl_df, use_container_width=True)
+                    st.dataframe(_arrow_safe(new_gl_df), width='stretch')
                 else:
                     st.info("No GitHub leaks found.")
                     if res.get('errors'):
@@ -2721,7 +2739,7 @@ with tab8:
     cls_df = project_manager.load_scan_results('classified_endpoints', target_domain)
     if isinstance(cls_df, pd.DataFrame) and not cls_df.empty:
         with st.expander(f"Stored Classified Endpoints ({len(cls_df)})"):
-            st.dataframe(cls_df, use_container_width=True)
+            st.dataframe(_arrow_safe(cls_df), width='stretch')
     cls_endpoints = []
     for scan_type in ['js_discovered_endpoints', 'live_hosts', 'param_miner']:
         df = project_manager.load_scan_results(scan_type, target_domain)
@@ -2743,7 +2761,7 @@ with tab8:
                     if not new_cls_df.empty:
                         project_manager.save_scan_results('classified_endpoints', target_domain, new_cls_df)
                         st.success(f"Classified {len(new_cls_df)} endpoint(s).")
-                        st.dataframe(new_cls_df, use_container_width=True)
+                        st.dataframe(_arrow_safe(new_cls_df), width='stretch')
                     else:
                         st.info("Nothing to classify.")
                 except Exception as e:
@@ -2805,7 +2823,7 @@ with tab9:
         _df = project_manager.load_scan_results(_k, target_domain)
         if isinstance(_df, pd.DataFrame) and not _df.empty:
             st.markdown(f"**{_label} — {len(_df)}**")
-            st.dataframe(_df, use_container_width=True)
+            st.dataframe(_arrow_safe(_df), width='stretch')
             st.download_button(f"📥 {_label}", _df.to_csv(index=False),
                                f"{target_domain}_{_k}.csv", "text/csv", key=f"dl_{_k}_tab9")
         else:
@@ -2894,7 +2912,7 @@ with tab9:
     if isinstance(_hist_df, pd.DataFrame) and not _hist_df.empty:
         st.markdown("---")
         st.subheader(f"Probe history — {len(_hist_df)}")
-        st.dataframe(_hist_df, use_container_width=True)
+        st.dataframe(_arrow_safe(_hist_df), width='stretch')
         st.download_button("📥 Probes CSV", _hist_df.to_csv(index=False),
                            f"{target_domain}_cookie_bomb_probes.csv", "text/csv", key="dl_probes_tab9")
         if st.button("Clear history", key="cb_clear_hist_tab9"):

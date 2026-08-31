@@ -26,7 +26,7 @@ def render_df(st, df, columns: Optional[List[str]] = None,
         cols = [c for c in columns if c in df.columns]
         df = df[cols]
     with st.expander(f"{title} ({len(df)})", expanded=expanded):
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width='stretch')
         st.download_button("📥 Download", df.to_csv(index=False),
                            download_name, "text/csv", key=f"dl_{download_name}")
 
