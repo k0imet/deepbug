@@ -16,13 +16,41 @@ print_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+# Pick package manager based on the operating system
+if [ -r /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+fi
+case "${ID:-}" in
+    fedora|rhel|centos) PKG_MGR="dnf" ;;
+    *)
+        case "${ID_LIKE:-}" in
+            *fedora*|*rhel*|*centos*) PKG_MGR="dnf" ;;
+            *) PKG_MGR="apt" ;;
+        esac
+        ;;
+esac
+
+pkg_install() {
+    if [ "$PKG_MGR" = "dnf" ]; then
+        sudo dnf install -y "$@"
+    else
+        sudo apt install -y "$@"
+    fi
+}
+
 # ---------------------------------------------------------------------
 # 1. Update system and install base dependencies
 # ---------------------------------------------------------------------
 print_info "Updating system packages and installing base dependencies..."
-sudo apt update -y
-sudo apt upgrade -y
-sudo apt install -y git make gcc libpcap-dev python3 python3-pip python3-venv curl wget
+if [ "$PKG_MGR" = "dnf" ]; then
+    sudo dnf makecache
+    pkg_install git make gcc libpcap-devel python3 python3-pip python3-devel curl wget
+else
+    sudo apt update -y
+    sudo apt upgrade -y
+    pkg_install git make gcc libpcap-dev python3 python3-pip python3-venv curl wget
+fi
 
 # ---------------------------------------------------------------------
 # 2. Ensure Go is installed and set up GOPATH/GOBIN
@@ -83,10 +111,10 @@ fi
 # ---------------------------------------------------------------------
 # 5. Install APT packages (nmap, masscan)
 # ---------------------------------------------------------------------
-print_info "Installing APT packages..."
+print_info "Installing scanner packages..."
 for pkg in nmap masscan; do
     if ! command_exists "$pkg"; then
-        sudo apt install -y "$pkg"
+        pkg_install "$pkg"
         print_info "$pkg installed."
     else
         print_warn "$pkg already installed."

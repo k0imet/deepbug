@@ -38,15 +38,16 @@ streamlit run deepbug_app.py
 The script needs **Go already installed** (it exits with an error otherwise).
 It then:
 
-1. Updates system packages and installs base deps (`git make gcc libpcap-dev
-   python3 python3-pip python3-venv curl wget`).
+1. Updates system packages and installs base deps (`git make gcc libpcap-dev`
+   / `libpcap-devel`, `python3 python3-pip`, `curl wget`). Debian/Ubuntu uses
+   `apt`; Fedora/RHEL uses `dnf`.
 2. Installs Go tools into `$GOBIN` (`$HOME/go/bin` by default):
 
    `subfinder`, `dnsx`, `nuclei`, `subjs`, `webanalyze`, `httpx`, `getjs`,
    `gf`, `amass`, `fakjs`, `ffuf`
 
 3. Clones or updates the **nuclei-templates** repo to `~/nuclei-templates`.
-4. Installs APT packages **nmap** and **masscan**.
+4. Installs **nmap** and **masscan** via the distro package manager.
 5. Installs Python tools: **paramspider** (`/opt/paramspider`), **LinkFinder**
    (`/opt/LinkFinder`), **cloud_enum** (`/opt/cloud_enum`, linked to
    `/usr/local/bin/cloud_enum`).

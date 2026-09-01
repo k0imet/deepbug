@@ -79,11 +79,11 @@ pip install -r requirements.txt
 
 ### 2. Install external tools
 
-`app/install.sh` installs the command-line tools DeepBug shells out to (requires `sudo` for apt packages):
+`app/install.sh` installs the command-line tools DeepBug shells out to (requires `sudo` for apt/dnf packages):
 
 * **Go tools**: subfinder, dnsx, nuclei, subjs, webanalyze, httpx, getjs, gf, amass, fakjs, ffuf
 * **Nuclei templates**: cloned to `~/nuclei-templates`
-* **APT packages**: nmap, masscan
+* **System packages**: nmap, masscan
 * **Python tools**: paramspider, LinkFinder, cloud_enum
 
 ```bash
@@ -127,7 +127,7 @@ deepbug/
 ├── deepbug_app.py            # Entrypoint: config, theme, sidebar + navigation
 ├── requirements.txt          # Python dependencies
 ├── app/
-│   ├── install.sh            # Installs external tools (go/apt/python)
+│   ├── install.sh            # Installs external tools (go/apt/dnf/python)
 │   ├── pages/                # The 6 Streamlit pages (workflow order)
 │   ├── modules/              # Core logic
 │   │   ├── config.json       # Configuration (see below)
