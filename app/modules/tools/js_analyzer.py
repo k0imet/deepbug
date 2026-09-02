@@ -25,7 +25,14 @@ NEW in v3.2 (advanced recon layer - "beyond basic enum"):
 - Hardcoded JWT harvesting + decode (alg:none, HS256, interesting claims)
 - retire.js-lite: detected vendor lib versions matched against CVE ranges
 
+NEW in v3.8 (2026 - best-of-breed):
+- Vulners auto-enrich: every versioned tech (retire.js + webanalyze) auto-lookup via Vulners.com (CVSS/EPSS/KEV/exploits)
+- Interesting comments (TODO|FIXME|SECURITY|HACK|BUG) + email harvester
+- Raw auth header rules (Bearer/Basic/AWS Sig) + decode layer (\\u00XX / %XX / HTML entities)
+- Source-map .map guessing probe + NPM scoped package regex
+
 File: app/modules/tools/js_analyzer.py
+__version__ = "3.8.0"
 """
 
 import re
@@ -413,6 +420,37 @@ VULNERABLE_LIBRARIES = {
         (None, '1.13.0-0', "CVE-2021-26675 - Prototype pollution in template/interpolation", 'HIGH'),
     ],
 }
+
+# 5) Interesting comments (TODO|FIXME|SECURITY|HACK|BUG) — zack0x01 borrow
+COMMENT_PATTERN = re.compile(r'//\s*(TODO|FIXME|XXX|HACK|BUG|NOTE|SECURITY|DEPRECATED|WARNING|TEMP)\b.{0,120}', re.I)
+EMAIL_PATTERN = re.compile(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b')
+
+# 6) Raw auth headers (JSRecon-Buddy borrow) — Bearer / Basic / AWS Sig
+RAW_AUTH_PATTERNS = [
+    (re.compile(r'\bBearer\s+([A-Za-z0-9\-._~+/=]{20,})'), 'raw-bearer-token'),
+    (re.compile(r'\bBasic\s+([A-Za-z0-9+/=]{20,})'), 'raw-basic-auth'),
+    (re.compile(r'AWS4-HMAC-SHA256[^;]{0,200}?Signature=([a-f0-9]{64})'), 'raw-aws-auth-header'),
+]
+
+def _decode_js_content(content: str) -> str:
+    """Decode \\u00XX, %XX and HTML entities before secret scanning (Buddy borrow)."""
+    if not content or ('\\u' not in content and '%2' not in content and '&#' not in content):
+        return content
+    try:
+        # \\u00XX
+        content = re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), content)
+        # %XX (only if looks encoded)
+        if '%2' in content or '%3' in content:
+            import urllib.parse as _up
+            # cautious: only decode if % is followed by hex
+            content = _up.unquote(content)
+        # HTML entities via html parser
+        if '&#' in content or '&lt;' in content:
+            import html as _html
+            content = _html.unescape(content)
+    except Exception:
+        pass
+    return content
 
 
 # ---------------------------------------------------------------------
@@ -853,6 +891,20 @@ class JSAnalyzer:
         # per-run state for candidate generation during seed HTML processing
         self._nextjs_candidates: Set[str] = set()
         self._candidate_notes: List[Dict] = []
+
+        # ---- v3.8: Vulners auto-enrich + comments/emails + raw auth + decode
+        self.vulners_auto = bool(config.get('js_vulners_auto', True))
+        self.detect_comments = bool(config.get('js_detect_comments', True))
+        self.detect_emails = bool(config.get('js_detect_emails', True))
+        self._vulners_enricher = None
+        if self.vulners_auto:
+            try:
+                from app.modules.tools.vulners_enricher import VulnersEnricher
+                _ve = VulnersEnricher(config)
+                if _ve.enabled:
+                    self._vulners_enricher = _ve
+            except Exception:
+                pass
 
         # Compile regex patterns for performance
         self._compiled_dangerous = {k: re.compile(v, re.IGNORECASE) for k, v in DANGEROUS_PATTERNS.items()}
