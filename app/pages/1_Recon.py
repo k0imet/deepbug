@@ -45,6 +45,8 @@ from app.modules.tools.param_miner import ParamMiner
 from app.modules.tools.cors_scanner import CORSHeadersScanner
 from app.modules.tools.graphql_scanner import GraphQLScanner
 from app.modules.tools.secret_verifier import SecretVerifier
+from app.utils.logger import get_logger as _get_logger
+logger = _get_logger()
 from app.modules.tools.live_rest_validator import LiveRestValidator
 from app.modules.tools.bearer_mint_prober import BearerMintProber
 from app.modules.tools.idor_scanner import IDORScanner
@@ -56,6 +58,7 @@ from app.modules.tools.cors_validator import CORSValidator
 from app.modules.tools.open_redirect_validator import OpenRedirectValidator
 from app.modules.tools.ssrf_validator import SSRFValidator
 from app.modules.tools.api_docs_mapper import APIDocsMapper
+from app.modules.tools.vulners_enricher import VulnersEnricher
 from app.modules.tools.mass_assignment_scanner import MassAssignmentScanner
 from app.modules.tools.csti_scanner import CSTIScanner
 from app.modules.tools.supply_chain_auditor import SupplyChainAuditor
@@ -238,6 +241,7 @@ jwt_scanner = JWTScanner()
 auth_gateway_scanner = AuthGatewayScanner()
 bypass403_engine = Bypass403Engine(CONFIG)
 api_docs_mapper = APIDocsMapper(CONFIG)
+vulners_enricher = VulnersEnricher(CONFIG)
 github_leak_scanner = GitHubLeakScanner(CONFIG)
 secret_chainer = SecretChainer(CONFIG)
 
@@ -306,9 +310,9 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "🌐 Subdomain & Takeover",
     "🔌 Port & Service Scan",
     "📜 JavaScript Analysis",
+    "🔑 Parameter Mining",
     "🔍 Vulnerability Detection",
     "☁️ Cloud & Infra",
-    "🔑 Parameter Mining",
     "🛡️ Security Headers",
     "🧬 Advanced Scans",
     "🍪 Cookie Bomb",
@@ -1609,9 +1613,267 @@ with tab3:
             st.caption("Service graph: run JS Analysis.")
 
 # =====================================================================
-# TAB 4: Vulnerability Detection (GF + kxss)
+# TAB 4: Parameter Mining
 # =====================================================================
 with tab4:
+    st.subheader(f"Parameter Mining: `{target_domain}`")
+
+    urls = []
+    live_df = project_manager.load_scan_results('live_hosts', target_domain)
+    if isinstance(live_df, pd.DataFrame) and 'URL' in live_df.columns:
+        urls.extend(live_df['URL'].tolist())
+    js_endpoints = project_manager.load_scan_results('js_discovered_endpoints', target_domain)
+    if isinstance(js_endpoints, pd.DataFrame) and 'endpoint' in js_endpoints.columns:
+        urls.extend(js_endpoints['endpoint'].tolist())
+    urls = sorted(set([u for u in urls if is_valid_url(u)]))
+    urls = project_manager.filter_targets_by_scope(urls)
+    if not urls:
+        urls = [f"https://{target_domain}", f"http://{target_domain}"]
+
+    # --- Archived/crawled URL collection (gau / waybackurls / katana) ---
+    coll_df = project_manager.load_scan_results('collected_urls', target_domain)
+    if isinstance(coll_df, pd.DataFrame) and 'URL' in coll_df.columns:
+        urls = sorted(set(urls) | {u for u in coll_df['URL'].tolist() if is_valid_url(u)})
+
+    with st.expander(f"🗃️ URL Collection (archives + crawler) — {len(coll_df) if isinstance(coll_df, pd.DataFrame) and not coll_df.empty else 0} stored"):
+        uc1, uc2 = st.columns(2)
+        with uc1:
+            use_archives = st.checkbox("Archives (gau, waybackurls)", value=True, key="uc_archives")
+        with uc2:
+            use_crawler = st.checkbox("Active crawl (katana)", value=False, key="uc_crawler",
+                                      help="Crawls the live site - noisy, only enable when allowed.")
+        if st.button("🗃️ Collect URLs", key="run_url_collect"):
+            with st.spinner("Collecting URLs..."):
+                progress = st.progress(0.0, text="Starting...")
+                try:
+                    all_urls = []
+                    if use_archives:
+                        wb_hunter = WaybackURLHunter(CONFIG)
+                        wb_res = wb_hunter.scan_sync(
+                            target_domain,
+                            scope_hosts=[target_domain],
+                            progress_callback=lambda p, m: progress.progress(min(p, 0.5), m))
+                        all_urls.extend(wb_res.get('urls', []))
+                        st.caption(f"📚 Archives: {wb_res.get('totals', {}).get('urls', 0)} URLs "
+                                   f"({wb_res.get('sources', {})})")
+                    if use_crawler:
+                        progress.progress(0.5, "Active crawl (katana/gau)...")
+                        crawler = ActiveCrawler(CONFIG)
+                        cr_res = crawler.scan_sync(scope_hosts=[target_domain],
+                                                   targets=[f"https://{target_domain}"])
+                        all_urls.extend(cr_res.get('urls', []))
+                        st.caption(f"🕷️ Crawler: {cr_res.get('raw_total', 0)} raw URLs "
+                                   f"({cr_res.get('sources', {})})")
+                    progress.progress(0.9, "Cleaning & deduplicating...")
+                    all_urls = url_cleaner.clean_urls(all_urls)
+                    urls_df = pd.DataFrame({'URL': all_urls})
+                    if not urls_df.empty:
+                        # Scope enforcement before saving/feeding downstream
+                        in_scope_urls = project_manager.filter_targets_by_scope(urls_df['URL'].tolist())
+                        urls_df = urls_df[urls_df['URL'].isin(in_scope_urls)].reset_index(drop=True)
+                        project_manager.save_scan_results('collected_urls', target_domain, urls_df)
+                        st.success(f"Collected {len(urls_df)} unique URLs.")
+                        st.dataframe(_arrow_safe(urls_df.head(200)), width='stretch')
+                    else:
+                        st.info("No URLs collected (tools missing or archives empty).")
+                except Exception as e:
+                    st.error(f"URL collection failed: {e}")
+
+    # --- Tool status with resolved paths ---
+    x8_path = getattr(param_miner, 'x8_path', None)
+    arjun_path = getattr(param_miner, 'arjun_path', None)
+    ps_path = getattr(param_miner, 'paramspider_path', None)
+
+    if x8_path:
+        engine_line = f"✅ x8 `{x8_path}` (primary)"
+    elif arjun_path:
+        engine_line = f"✅ Arjun `{arjun_path}` (primary)"
+    else:
+        engine_line = "⚠️ Built-in async fuzzer (install x8 or arjun for better coverage)"
+    osint_line = f"✅ ParamSpider `{ps_path}` (OSINT)" if ps_path else "❌ ParamSpider (no historical OSINT)"
+    st.caption(engine_line + "  |  " + osint_line)
+
+    # --- Run options ---
+    opt1, opt2, opt3 = st.columns([1, 1, 2])
+    with opt1:
+        max_urls = st.slider("Max URLs to fuzz:", 5, 200, min(25, max(5, len(urls))), key="pm_max_urls",
+                             help="Active fuzzing is noisy - focus on key endpoints.")
+    with opt2:
+        enable_osint = st.checkbox("Historical OSINT", value=bool(ps_path), key="pm_osint",
+                                   help="ParamSpider: mine archived URLs from Wayback for known params.")
+    with opt3:
+        manual_pm_urls = st.text_area("Extra URLs (one per line):", height=68, key="pm_manual_urls")
+
+    if x8_path:
+        xc1, xc2 = st.columns(2)
+        with xc1:
+            x8_conc = st.slider("x8 concurrency (requests/URL):", 3, 40,
+                                int(CONFIG.get('param_miner', {}).get('x8_concurrency', 15)),
+                                key="pm_x8_conc", help="Per-URL parallelism. Lower it on WAF-fronted targets.")
+        with xc2:
+            x8_procs = st.slider("Parallel x8 processes:", 1, 8,
+                                 int(CONFIG.get('param_miner', {}).get('x8_processes', 4)),
+                                 key="pm_x8_procs", help="How many URLs are fuzzed at once.")
+        t1, t2 = st.columns([2, 3])
+        with t1:
+            test_x8 = st.button("🧪 Test x8 (raw output)", key="pm_test_x8",
+                                help="Run x8 once against the first URL and show its raw stdout + parsed JSON - "
+                                     "proves the binary, flags and parser all work.")
+        with t2:
+            st.caption("Diagnose x8 before a full run: shows the exact console output and parsed findings.")
+        if test_x8:
+            test_url = urls[0] if urls else f"https://{target_domain}"
+            with st.spinner(f"Running x8 self-test against {test_url}..."):
+                diag = param_miner.x8_self_test(test_url)
+            if diag.get('ok'):
+                st.success(f"x8 self-test passed (exit {diag.get('exit_code')}) — binary, flags and parser OK.")
+            else:
+                st.error(f"x8 self-test failed: {diag.get('error') or diag.get('stderr')}")
+            with st.expander("🧪 Raw x8 output", expanded=True):
+                st.caption(f"Command: `x8 -u {test_url} -w <wordlist> -X GET -c 5 -O json`")
+                if diag.get('stdout'):
+                    st.text(diag['stdout'][-1500:])
+                if diag.get('stderr'):
+                    st.warning(diag['stderr'][-800:])
+                if diag.get('json_output'):
+                    st.json(diag['json_output'])
+
+    fuzz_urls = list(urls)
+    if manual_pm_urls.strip():
+        fuzz_urls.extend(u.strip() for u in manual_pm_urls.splitlines() if is_valid_url(u.strip()))
+    fuzz_urls = project_manager.filter_targets_by_scope(fuzz_urls)
+    fuzz_urls = list(dict.fromkeys(fuzz_urls))[:max_urls]
+
+    st.info(f"Ready to fuzz {len(fuzz_urls)} URLs (of {len(urls)} collected).")
+
+    if st.button("🔑 Run Parameter Mining", key="run_param_miner"):
+        param_miner.enable_osint = enable_osint and bool(ps_path)
+        param_miner.x8_concurrency = x8_conc if x8_path else param_miner.x8_concurrency
+        param_miner.x8_processes = x8_procs if x8_path else param_miner.x8_processes
+        with st.spinner("Mining parameters..."):
+            progress = st.progress(0.0, text="Starting...")
+            try:
+                results = param_miner.mine_parameters_sync(
+                    fuzz_urls,
+                    progress_callback=lambda p, m: progress.progress(min(p, 1.0), text=m)
+                )
+
+                stats = getattr(param_miner, 'last_stats', {})
+                errors = getattr(param_miner, 'last_errors', [])
+
+                if results:
+                    total_params = sum(len(v) for v in results.values())
+                    st.success(f"Found {total_params} parameters across {len(results)} URLs.")
+                    rows = []
+                    for url, params in results.items():
+                        for p in params:
+                            rows.append({
+                                'URL': url,
+                                'Method': p.get('method', 'GET'),
+                                'Parameter': p['parameter'],
+                                'Injection': p.get('injection_place', ''),
+                                'Value': p.get('value') or '',
+                                'Status': p.get('status', ''),
+                                'Reason': p.get('reason', ''),
+                                'Tool': p.get('tool', ''),
+                            })
+                    df = pd.DataFrame(rows)
+                    st.dataframe(_arrow_safe(df), width='stretch')
+                    st.caption("`Injection` = where the parameter lives (Path/Query/Body/Header) · `Reason` = why x8 flagged it "
+                               "(e.g. Reflected, status/size delta). Copy the URL into Burp/Caido to validate.")
+                    project_manager.save_scan_results('param_miner', target_domain, df)
+                    csv = df.to_csv(index=False)
+                    st.download_button("📥 Download CSV", csv, f"{target_domain}_params.csv", "text/csv", key="dl_param_miner")
+                else:
+                    st.info("No hidden parameters found on the tested URLs.")
+                    # The "why" matters more than the zero - show it upfront
+                    if stats.get('hint'):
+                        st.warning(f"💡 {stats['hint']}")
+                    if stats.get('x8_baselines'):
+                        bl = stats['x8_baselines']
+                        st.caption("x8 baseline responses: " + " | ".join(f"`{code}` × {n}" for code, n in sorted(bl.items())))
+
+                # Always show run stats - "did x8 actually run, and what did it say?"
+                st.caption(
+                    f"⚙️ Run stats: engine=`{stats.get('engine', '?')}` · "
+                    f"{stats.get('urls_tested', 0)} URLs fuzzed · "
+                    f"{stats.get('total_params', 0)} params found · "
+                    f"wordlist={stats.get('wordlist_size', 0)} · "
+                    f"OSINT params={stats.get('historical_params', 0)} · "
+                    f"tool errors={len(errors)}"
+                )
+                x8_out = getattr(param_miner, '_x8_stdout', {})
+                if x8_out and stats.get('engine') == 'x8':
+                    with st.expander(f"🩺 x8 console output ({len(x8_out)} URLs)"):
+                        for u, tail in list(x8_out.items())[:10]:
+                            st.caption(u)
+                            st.code(tail, language="text")
+
+                # ---- Historical OSINT yield (ParamSpider / Wayback) ----
+                # On WAF-fronted targets this is often the ONLY yield - always show it.
+                # Params are joined to the exact archived URLs they appeared on,
+                # so they are actionable (not a bare list of names).
+                hist_params = getattr(param_miner, 'last_historical_params', [])
+                hist_urls = getattr(param_miner, 'last_historical_urls', [])
+                hist_pairs = []
+                for u in hist_urls:
+                    try:
+                        parsed = urlparse(u)
+                        for name, vals in parse_qs(parsed.query).items():
+                            hist_pairs.append({
+                                'URL': u,
+                                'Parameter': name,
+                                'Sample Value': vals[0] if vals else '',
+                            })
+                    except Exception:
+                        continue
+                if hist_pairs:
+                    hist_df = pd.DataFrame(hist_pairs).drop_duplicates(subset=['URL', 'Parameter'])
+                    project_manager.save_scan_results('param_miner_historical', target_domain, hist_df)
+                    with st.expander(f"🕰️ Historical params from Wayback ({len(hist_df)} on {len(hist_urls)} archived URLs)",
+                                     expanded=not results):
+                        st.caption("Each row shows the exact archived URL the parameter was seen on - paste it into "
+                                   "Burp/Caido or feed to GF/kxss. Also saved to disk for the Vulnerability Detection tab.")
+                        st.dataframe(_arrow_safe(hist_df), width='stretch')
+                        st.download_button("📥 Download historical params (URL + param)",
+                                           hist_df.to_csv(index=False),
+                                           f"{target_domain}_historical_params.csv", "text/csv", key="dl_hist_params")
+                elif hist_params:
+                    st.caption(f"🕰️ {len(hist_params)} historical parameter names seen (no query-string URLs retained).")
+
+                # Diagnostics: why did/didn't it work
+                if stats or errors:
+                    with st.expander("🩺 Run diagnostics"):
+                        if stats:
+                            st.json(stats)
+                        if errors:
+                            st.warning(f"{len(errors)} tool error(s):")
+                            for e in errors[:20]:
+                                st.text(e)
+            except Exception as e:
+                st.error(f"Parameter mining failed: {e}")
+
+    df = project_manager.load_scan_results('param_miner', target_domain)
+    if isinstance(df, pd.DataFrame) and not df.empty:
+        with st.expander(f"Stored Results ({len(df)})"):
+            st.dataframe(_arrow_safe(df), width='stretch')
+
+    hist_df = project_manager.load_scan_results('param_miner_historical', target_domain)
+    if isinstance(hist_df, pd.DataFrame) and not hist_df.empty:
+        with st.expander(f"🕰️ Stored Historical URLs ({len(hist_df)})"):
+            st.dataframe(_arrow_safe(hist_df), width='stretch')
+
+    # Feeder hint — params will auto-feed GF in next tab
+    _pm_df = project_manager.load_scan_results('param_miner', target_domain)
+    _pm_count = len(_pm_df) if isinstance(_pm_df, pd.DataFrame) and not _pm_df.empty else 0
+    if _pm_count:
+        st.success(f"✅ {_pm_count} hidden params ready → switch to **🔍 Vulnerability Detection** tab and run GF — they’ll be auto-injected as `?param=deepbug_test`")
+        st.caption("Tip: GF now builds full URLs from param_miner and historical Wayback URLs flow automatically.")
+
+# =====================================================================
+# TAB 5: Vulnerability Detection (GF + kxss)
+# =====================================================================
+with tab5:
     st.subheader(f"Vulnerability Detection: `{target_domain}`")
 
     urls = []
@@ -1623,7 +1885,16 @@ with tab4:
         urls.extend(js_endpoints['endpoint'].tolist())
     param_miner_df = project_manager.load_scan_results('param_miner', target_domain)
     if isinstance(param_miner_df, pd.DataFrame) and 'URL' in param_miner_df.columns:
-        urls.extend(param_miner_df['URL'].tolist())
+        if 'Parameter' in param_miner_df.columns:
+            # Build full URLs with discovered params (e.g. https://example.com/page?param=value)
+            for _, row in param_miner_df.iterrows():
+                base = str(row['URL']).strip()
+                param = str(row['Parameter']).strip()
+                if base and param and is_valid_url(base):
+                    sep = '&' if '?' in base else '?'
+                    urls.append(f"{base}{sep}{param}=deepbug_test")
+        else:
+            urls.extend(param_miner_df['URL'].tolist())
     # Archived Wayback URLs from ParamSpider OSINT - real params seen in the wild
     hist_pm_df = project_manager.load_scan_results('param_miner_historical', target_domain)
     if isinstance(hist_pm_df, pd.DataFrame) and 'URL' in hist_pm_df.columns:
@@ -1633,7 +1904,9 @@ with tab4:
     if not urls:
         urls = [f"https://{target_domain}", f"http://{target_domain}"]
 
-    st.info(f"Scanning {len(urls)} URLs.")
+    # Count how many came from param_miner for the info line
+    _pm_injected = sum(1 for u in urls if "deepbug_test" in u)
+    st.info(f"Scanning {len(urls)} URLs" + (f" (including {_pm_injected} param-mined `?param=deepbug_test`)" if _pm_injected else "") + ".")
 
     available_categories = gf_scanner.list_available_categories()
     pattern_count = len(getattr(gf_scanner, 'patterns', {}))
@@ -1902,9 +2175,9 @@ with tab4:
                     st.error(f"Git disclosure scan failed: {e}")
 
 # =====================================================================
-# TAB 5: Cloud & Infra
+# TAB 6: Cloud & Infra
 # =====================================================================
-with tab5:
+with tab6:
     st.subheader(f"Cloud Enumeration: `{target_domain}`")
 
     if st.button("☁️ Run Cloud Scan", key="run_cloud"):
@@ -1933,257 +2206,6 @@ with tab5:
         if isinstance(df, pd.DataFrame) and not df.empty:
             with st.expander(f"{provider.upper()} ({len(df)})"):
                 st.dataframe(_arrow_safe(df), width='stretch')
-
-# =====================================================================
-# TAB 6: Parameter Mining
-# =====================================================================
-with tab6:
-    st.subheader(f"Parameter Mining: `{target_domain}`")
-
-    urls = []
-    live_df = project_manager.load_scan_results('live_hosts', target_domain)
-    if isinstance(live_df, pd.DataFrame) and 'URL' in live_df.columns:
-        urls.extend(live_df['URL'].tolist())
-    js_endpoints = project_manager.load_scan_results('js_discovered_endpoints', target_domain)
-    if isinstance(js_endpoints, pd.DataFrame) and 'endpoint' in js_endpoints.columns:
-        urls.extend(js_endpoints['endpoint'].tolist())
-    urls = sorted(set([u for u in urls if is_valid_url(u)]))
-    urls = project_manager.filter_targets_by_scope(urls)
-    if not urls:
-        urls = [f"https://{target_domain}", f"http://{target_domain}"]
-
-    # --- Archived/crawled URL collection (gau / waybackurls / katana) ---
-    coll_df = project_manager.load_scan_results('collected_urls', target_domain)
-    if isinstance(coll_df, pd.DataFrame) and 'URL' in coll_df.columns:
-        urls = sorted(set(urls) | {u for u in coll_df['URL'].tolist() if is_valid_url(u)})
-
-    with st.expander(f"🗃️ URL Collection (archives + crawler) — {len(coll_df) if isinstance(coll_df, pd.DataFrame) and not coll_df.empty else 0} stored"):
-        uc1, uc2 = st.columns(2)
-        with uc1:
-            use_archives = st.checkbox("Archives (gau, waybackurls)", value=True, key="uc_archives")
-        with uc2:
-            use_crawler = st.checkbox("Active crawl (katana)", value=False, key="uc_crawler",
-                                      help="Crawls the live site - noisy, only enable when allowed.")
-        if st.button("🗃️ Collect URLs", key="run_url_collect"):
-            with st.spinner("Collecting URLs..."):
-                progress = st.progress(0.0, text="Starting...")
-                try:
-                    all_urls = []
-                    if use_archives:
-                        wb_hunter = WaybackURLHunter(CONFIG)
-                        wb_res = wb_hunter.scan_sync(
-                            target_domain,
-                            scope_hosts=[target_domain],
-                            progress_callback=lambda p, m: progress.progress(min(p, 0.5), m))
-                        all_urls.extend(wb_res.get('urls', []))
-                        st.caption(f"📚 Archives: {wb_res.get('totals', {}).get('urls', 0)} URLs "
-                                   f"({wb_res.get('sources', {})})")
-                    if use_crawler:
-                        progress.progress(0.5, "Active crawl (katana/gau)...")
-                        crawler = ActiveCrawler(CONFIG)
-                        cr_res = crawler.scan_sync(scope_hosts=[target_domain],
-                                                   targets=[f"https://{target_domain}"])
-                        all_urls.extend(cr_res.get('urls', []))
-                        st.caption(f"🕷️ Crawler: {cr_res.get('raw_total', 0)} raw URLs "
-                                   f"({cr_res.get('sources', {})})")
-                    progress.progress(0.9, "Cleaning & deduplicating...")
-                    all_urls = url_cleaner.clean_urls(all_urls)
-                    urls_df = pd.DataFrame({'URL': all_urls})
-                    if not urls_df.empty:
-                        # Scope enforcement before saving/feeding downstream
-                        in_scope_urls = project_manager.filter_targets_by_scope(urls_df['URL'].tolist())
-                        urls_df = urls_df[urls_df['URL'].isin(in_scope_urls)].reset_index(drop=True)
-                        project_manager.save_scan_results('collected_urls', target_domain, urls_df)
-                        st.success(f"Collected {len(urls_df)} unique URLs.")
-                        st.dataframe(_arrow_safe(urls_df.head(200)), width='stretch')
-                    else:
-                        st.info("No URLs collected (tools missing or archives empty).")
-                except Exception as e:
-                    st.error(f"URL collection failed: {e}")
-
-    # --- Tool status with resolved paths ---
-    x8_path = getattr(param_miner, 'x8_path', None)
-    arjun_path = getattr(param_miner, 'arjun_path', None)
-    ps_path = getattr(param_miner, 'paramspider_path', None)
-
-    if x8_path:
-        engine_line = f"✅ x8 `{x8_path}` (primary)"
-    elif arjun_path:
-        engine_line = f"✅ Arjun `{arjun_path}` (primary)"
-    else:
-        engine_line = "⚠️ Built-in async fuzzer (install x8 or arjun for better coverage)"
-    osint_line = f"✅ ParamSpider `{ps_path}` (OSINT)" if ps_path else "❌ ParamSpider (no historical OSINT)"
-    st.caption(engine_line + "  |  " + osint_line)
-
-    # --- Run options ---
-    opt1, opt2, opt3 = st.columns([1, 1, 2])
-    with opt1:
-        max_urls = st.slider("Max URLs to fuzz:", 5, 200, min(25, max(5, len(urls))), key="pm_max_urls",
-                             help="Active fuzzing is noisy - focus on key endpoints.")
-    with opt2:
-        enable_osint = st.checkbox("Historical OSINT", value=bool(ps_path), key="pm_osint",
-                                   help="ParamSpider: mine archived URLs from Wayback for known params.")
-    with opt3:
-        manual_pm_urls = st.text_area("Extra URLs (one per line):", height=68, key="pm_manual_urls")
-
-    if x8_path:
-        xc1, xc2 = st.columns(2)
-        with xc1:
-            x8_conc = st.slider("x8 concurrency (requests/URL):", 3, 40,
-                                int(CONFIG.get('param_miner', {}).get('x8_concurrency', 15)),
-                                key="pm_x8_conc", help="Per-URL parallelism. Lower it on WAF-fronted targets.")
-        with xc2:
-            x8_procs = st.slider("Parallel x8 processes:", 1, 8,
-                                 int(CONFIG.get('param_miner', {}).get('x8_processes', 4)),
-                                 key="pm_x8_procs", help="How many URLs are fuzzed at once.")
-        t1, t2 = st.columns([2, 3])
-        with t1:
-            test_x8 = st.button("🧪 Test x8 (raw output)", key="pm_test_x8",
-                                help="Run x8 once against the first URL and show its raw stdout + parsed JSON - "
-                                     "proves the binary, flags and parser all work.")
-        with t2:
-            st.caption("Diagnose x8 before a full run: shows the exact console output and parsed findings.")
-        if test_x8:
-            test_url = urls[0] if urls else f"https://{target_domain}"
-            with st.spinner(f"Running x8 self-test against {test_url}..."):
-                diag = param_miner.x8_self_test(test_url)
-            if diag.get('ok'):
-                st.success(f"x8 self-test passed (exit {diag.get('exit_code')}) — binary, flags and parser OK.")
-            else:
-                st.error(f"x8 self-test failed: {diag.get('error') or diag.get('stderr')}")
-            with st.expander("🧪 Raw x8 output", expanded=True):
-                st.caption(f"Command: `x8 -u {test_url} -w <wordlist> -X GET -c 5 -O json`")
-                if diag.get('stdout'):
-                    st.text(diag['stdout'][-1500:])
-                if diag.get('stderr'):
-                    st.warning(diag['stderr'][-800:])
-                if diag.get('json_output'):
-                    st.json(diag['json_output'])
-
-    fuzz_urls = list(urls)
-    if manual_pm_urls.strip():
-        fuzz_urls.extend(u.strip() for u in manual_pm_urls.splitlines() if is_valid_url(u.strip()))
-    fuzz_urls = project_manager.filter_targets_by_scope(fuzz_urls)
-    fuzz_urls = list(dict.fromkeys(fuzz_urls))[:max_urls]
-
-    st.info(f"Ready to fuzz {len(fuzz_urls)} URLs (of {len(urls)} collected).")
-
-    if st.button("🔑 Run Parameter Mining", key="run_param_miner"):
-        param_miner.enable_osint = enable_osint and bool(ps_path)
-        param_miner.x8_concurrency = x8_conc if x8_path else param_miner.x8_concurrency
-        param_miner.x8_processes = x8_procs if x8_path else param_miner.x8_processes
-        with st.spinner("Mining parameters..."):
-            progress = st.progress(0.0, text="Starting...")
-            try:
-                results = param_miner.mine_parameters_sync(
-                    fuzz_urls,
-                    progress_callback=lambda p, m: progress.progress(min(p, 1.0), text=m)
-                )
-
-                stats = getattr(param_miner, 'last_stats', {})
-                errors = getattr(param_miner, 'last_errors', [])
-
-                if results:
-                    total_params = sum(len(v) for v in results.values())
-                    st.success(f"Found {total_params} parameters across {len(results)} URLs.")
-                    rows = []
-                    for url, params in results.items():
-                        for p in params:
-                            rows.append({
-                                'URL': url,
-                                'Method': p.get('method', 'GET'),
-                                'Parameter': p['parameter'],
-                                'Injection': p.get('injection_place', ''),
-                                'Value': p.get('value') or '',
-                                'Status': p.get('status', ''),
-                                'Reason': p.get('reason', ''),
-                                'Tool': p.get('tool', ''),
-                            })
-                    df = pd.DataFrame(rows)
-                    st.dataframe(_arrow_safe(df), width='stretch')
-                    st.caption("`Injection` = where the parameter lives (Path/Query/Body/Header) · `Reason` = why x8 flagged it "
-                               "(e.g. Reflected, status/size delta). Copy the URL into Burp/Caido to validate.")
-                    project_manager.save_scan_results('param_miner', target_domain, df)
-                    csv = df.to_csv(index=False)
-                    st.download_button("📥 Download CSV", csv, f"{target_domain}_params.csv", "text/csv", key="dl_param_miner")
-                else:
-                    st.info("No hidden parameters found on the tested URLs.")
-                    # The "why" matters more than the zero - show it upfront
-                    if stats.get('hint'):
-                        st.warning(f"💡 {stats['hint']}")
-                    if stats.get('x8_baselines'):
-                        bl = stats['x8_baselines']
-                        st.caption("x8 baseline responses: " + " | ".join(f"`{code}` × {n}" for code, n in sorted(bl.items())))
-
-                # Always show run stats - "did x8 actually run, and what did it say?"
-                st.caption(
-                    f"⚙️ Run stats: engine=`{stats.get('engine', '?')}` · "
-                    f"{stats.get('urls_tested', 0)} URLs fuzzed · "
-                    f"{stats.get('total_params', 0)} params found · "
-                    f"wordlist={stats.get('wordlist_size', 0)} · "
-                    f"OSINT params={stats.get('historical_params', 0)} · "
-                    f"tool errors={len(errors)}"
-                )
-                x8_out = getattr(param_miner, '_x8_stdout', {})
-                if x8_out and stats.get('engine') == 'x8':
-                    with st.expander(f"🩺 x8 console output ({len(x8_out)} URLs)"):
-                        for u, tail in list(x8_out.items())[:10]:
-                            st.caption(u)
-                            st.code(tail, language="text")
-
-                # ---- Historical OSINT yield (ParamSpider / Wayback) ----
-                # On WAF-fronted targets this is often the ONLY yield - always show it.
-                # Params are joined to the exact archived URLs they appeared on,
-                # so they are actionable (not a bare list of names).
-                hist_params = getattr(param_miner, 'last_historical_params', [])
-                hist_urls = getattr(param_miner, 'last_historical_urls', [])
-                hist_pairs = []
-                for u in hist_urls:
-                    try:
-                        parsed = urlparse(u)
-                        for name, vals in parse_qs(parsed.query).items():
-                            hist_pairs.append({
-                                'URL': u,
-                                'Parameter': name,
-                                'Sample Value': vals[0] if vals else '',
-                            })
-                    except Exception:
-                        continue
-                if hist_pairs:
-                    hist_df = pd.DataFrame(hist_pairs).drop_duplicates(subset=['URL', 'Parameter'])
-                    project_manager.save_scan_results('param_miner_historical', target_domain, hist_df)
-                    with st.expander(f"🕰️ Historical params from Wayback ({len(hist_df)} on {len(hist_urls)} archived URLs)",
-                                     expanded=not results):
-                        st.caption("Each row shows the exact archived URL the parameter was seen on - paste it into "
-                                   "Burp/Caido or feed to GF/kxss. Also saved to disk for the Vulnerability Detection tab.")
-                        st.dataframe(_arrow_safe(hist_df), width='stretch')
-                        st.download_button("📥 Download historical params (URL + param)",
-                                           hist_df.to_csv(index=False),
-                                           f"{target_domain}_historical_params.csv", "text/csv", key="dl_hist_params")
-                elif hist_params:
-                    st.caption(f"🕰️ {len(hist_params)} historical parameter names seen (no query-string URLs retained).")
-
-                # Diagnostics: why did/didn't it work
-                if stats or errors:
-                    with st.expander("🩺 Run diagnostics"):
-                        if stats:
-                            st.json(stats)
-                        if errors:
-                            st.warning(f"{len(errors)} tool error(s):")
-                            for e in errors[:20]:
-                                st.text(e)
-            except Exception as e:
-                st.error(f"Parameter mining failed: {e}")
-
-    df = project_manager.load_scan_results('param_miner', target_domain)
-    if isinstance(df, pd.DataFrame) and not df.empty:
-        with st.expander(f"Stored Results ({len(df)})"):
-            st.dataframe(_arrow_safe(df), width='stretch')
-
-    hist_df = project_manager.load_scan_results('param_miner_historical', target_domain)
-    if isinstance(hist_df, pd.DataFrame) and not hist_df.empty:
-        with st.expander(f"🕰️ Stored Historical URLs ({len(hist_df)})"):
-            st.dataframe(_arrow_safe(hist_df), width='stretch')
 
 # =====================================================================
 # TAB 7: Security Headers (CORS + Headers merged)
@@ -2472,6 +2494,98 @@ with tab8:
                 except Exception as e:
                     st.error(f"API docs mapping failed: {e}")
                     import traceback; st.code(traceback.format_exc())
+
+    # Vulners Enrichment — CVE + tech-version → CVSS/EPSS/exploits
+    st.markdown("---")
+    st.markdown("### 🔍 Vulners Enrichment")
+    st.caption("Enrich CVEs and tech versions via Vulners.com (`/api/v3/search/id` + `/search/lucene`). "
+               "Tech → CVEs (e.g. `nginx 1.18.0`) and CVE → EPSS/CVSS/CISA-KEV/exploits. Cached, never logs key.")
+    _vuln_key = getattr(vulners_enricher, 'api_key', '') or ""
+    if not _vuln_key:
+        _vuln_input = st.text_input("Vulners API Key", type="password", key="vulners_key_input_tab8",
+                                    placeholder="VULNERS_API_KEY",
+                                    help="Get at https://vulners.com — or set VULNERS_API_KEY env / tools.vulners_api_key in config")
+        if _vuln_input:
+            vulners_enricher.api_key = _vuln_input.strip()
+            vulners_enricher.enabled = bool(vulners_enricher.api_key)
+            st.caption(f"✅ Vulners key set ({len(vulners_enricher.api_key)} chars) — enrichment enabled for this session")
+    else:
+        st.caption(f"✅ Vulners key loaded ({len(_vuln_key)} chars) — enrichment enabled")
+        if st.button("Clear Vulners key", key="vulners_clear_tab8"):
+            vulners_enricher.api_key = ""
+            vulners_enricher.enabled = False
+            st.rerun()
+
+    col_v1, col_v2 = st.columns(2)
+    with col_v1:
+        _cve_input = st.text_input("Lookup CVE ID", placeholder="CVE-2026-3909", key="vulners_cve_input")
+        if st.button("🔍 Lookup CVE", key="vulners_lookup_cve"):
+            if not _cve_input:
+                st.warning("Enter a CVE ID")
+            elif not vulners_enricher.enabled:
+                st.error("Set Vulners API key first")
+            else:
+                with st.spinner(f"Looking up {_cve_input}..."):
+                    doc = vulners_enricher.lookup_id_sync(_cve_input)
+                    if doc:
+                        st.success(f"**{doc.get('title','')}** — {doc.get('description','')[:300]}...")
+                        c1, c2, c3 = st.columns(3)
+                        # Try cvss3 first
+                        cvss = doc.get('cvss3') or doc.get('cvss') or {}
+                        c1.metric("CVSS", cvss.get('score', doc.get('cvss', {}).get('score', 'N/A')))
+                        epss = (doc.get('epss') or [{}])[0] if isinstance(doc.get('epss'), list) else {}
+                        c2.metric("EPSS", f"{epss.get('epss','N/A')} ({epss.get('percentile','')})")
+                        c3.metric("Views", doc.get('viewCount','N/A'))
+                        if doc.get('cvelist'):
+                            st.caption(f"CVE: {', '.join(doc['cvelist'][:5])}")
+                        if doc.get('references'):
+                            with st.expander("References"):
+                                for ref in doc['references'][:10]:
+                                    st.markdown(f"- {ref}")
+                        # Save
+                        try:
+                            _df = pd.DataFrame([{'cve': _cve_input, 'title': doc.get('title',''), 'cvss': str(cvss.get('score','')), 'epss': str(epss.get('epss','')), 'doc': json.dumps(doc)[:8000]}])
+                            existing = project_manager.load_scan_results('vulners_lookups', target_domain)
+                            if isinstance(existing, pd.DataFrame) and not existing.empty:
+                                _df = pd.concat([existing, _df], ignore_index=True).drop_duplicates(subset=['cve'])
+                            project_manager.save_scan_results('vulners_lookups', target_domain, _df)
+                        except Exception:
+                            pass
+                    else:
+                        st.warning(f"No document for {_cve_input}")
+    with col_v2:
+        _tech_input = st.text_input("Enrich tech + version", placeholder="nginx 1.18.0", key="vulners_tech_input")
+        if st.button("🔍 Enrich tech", key="vulners_enrich_tech"):
+            if not _tech_input:
+                st.warning("Enter tech + version, e.g. nginx 1.18.0")
+            elif not vulners_enricher.enabled:
+                st.error("Set Vulners API key first")
+            else:
+                with st.spinner(f"Searching Vulners for {_tech_input}..."):
+                    # split tech and version
+                    parts = _tech_input.strip().split()
+                    tech = parts[0] if parts else _tech_input
+                    ver = parts[1] if len(parts) > 1 else ""
+                    docs = vulners_enricher.enrich_tech_sync(tech, ver, size=5)
+                    if docs:
+                        st.success(f"Found {len(docs)} CVEs for `{_tech_input}`")
+                        for d in docs[:5]:
+                            st.markdown(f"**{d.get('id','')}** — {d.get('title','')[:120]} (CVSS: {(d.get('cvss3') or d.get('cvss') or {}).get('score','N/A')})")
+                        try:
+                            _df = pd.DataFrame([{'tech': _tech_input, 'cve': d.get('id',''), 'title': d.get('title','')[:200]} for d in docs])
+                            existing = project_manager.load_scan_results('vulners_tech', target_domain)
+                            if isinstance(existing, pd.DataFrame) and not existing.empty:
+                                _df = pd.concat([existing, _df], ignore_index=True).drop_duplicates()
+                            project_manager.save_scan_results('vulners_tech', target_domain, _df)
+                        except Exception:
+                            pass
+                    else:
+                        st.info(f"No Vulners hits for `{_tech_input}`")
+
+    _vuln_hist = project_manager.load_scan_results('vulners_lookups', target_domain)
+    if isinstance(_vuln_hist, pd.DataFrame) and not _vuln_hist.empty:
+        with st.expander(f"Stored Vulners Lookups ({len(_vuln_hist)})"):
+            st.dataframe(_arrow_safe(_vuln_hist), width='stretch')
 
     # IDOR
     st.markdown("---")
