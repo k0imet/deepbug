@@ -55,6 +55,7 @@ from app.modules.tools.dom_xss_validator import DOMXSSValidator
 from app.modules.tools.cors_validator import CORSValidator
 from app.modules.tools.open_redirect_validator import OpenRedirectValidator
 from app.modules.tools.ssrf_validator import SSRFValidator
+from app.modules.tools.api_docs_mapper import APIDocsMapper
 from app.modules.tools.mass_assignment_scanner import MassAssignmentScanner
 from app.modules.tools.csti_scanner import CSTIScanner
 from app.modules.tools.supply_chain_auditor import SupplyChainAuditor
@@ -236,6 +237,7 @@ git_disclosure_scanner = GitDisclosureScanner(CONFIG)
 jwt_scanner = JWTScanner()
 auth_gateway_scanner = AuthGatewayScanner()
 bypass403_engine = Bypass403Engine(CONFIG)
+api_docs_mapper = APIDocsMapper(CONFIG)
 github_leak_scanner = GitHubLeakScanner(CONFIG)
 secret_chainer = SecretChainer(CONFIG)
 
@@ -398,12 +400,25 @@ with tab1:
             use_subfinder = st.checkbox("Subfinder", value=True, help="Capped at 3 min")
         with col2:
             enable_ct = st.checkbox("CT Logs", value=True, help="Certificate Transparency")
+            enable_chaos = st.checkbox("Chaos", value=bool(getattr(subdomain_scanner, 'chaos_api_key', '')),
+                                       help="ProjectDiscovery Chaos dataset (requires API key)")
             enable_perm = st.checkbox("Permutations", value=False, help="dnsgen/altdns/builtin - slow, capped at 3000")
             enable_wildcard = st.checkbox("Filter Wildcards", value=True)
         with col3:
             custom_ports = st.text_input("Httpx extra ports:", "",
                                           help="Comma-separated. Default: 443 only (fast). Add e.g. 80,8080,8443 to probe more.")
             amass_cap = st.number_input("Amass time cap (min):", 1, 15, 5, key="amass_cap")
+            # Chaos API key input (shown only if enabled or key missing)
+            _chaos_key_val = getattr(subdomain_scanner, 'chaos_api_key', '') or ""
+            if enable_chaos and not _chaos_key_val:
+                _chaos_input = st.text_input("Chaos API Key", type="password", key="chaos_api_key_input",
+                                             placeholder="PDCP_API_KEY or CHAOS_API_KEY",
+                                             help="Get it at https://chaos.projectdiscovery.io — or set CHAOS_API_KEY env")
+                if _chaos_input:
+                    subdomain_scanner.chaos_api_key = _chaos_input.strip()
+                    st.caption("✅ Chaos key set for this session (not persisted). Add to config tools.chaos_api_key to persist.")
+            elif _chaos_key_val:
+                st.caption(f"✅ Chaos key loaded ({len(_chaos_key_val)} chars) — dataset enabled")
 
         st.caption("⚡ Passive sources run in parallel. Only DNS-resolved hosts get HTTP probed.")
 
@@ -425,14 +440,22 @@ with tab1:
                     def _fetch_ct():
                         return asyncio.run(subdomain_scanner._fetch_ct_logs(target_domain))
 
+                    def _fetch_chaos():
+                        return asyncio.run(subdomain_scanner._fetch_chaos(target_domain))
+
                     futures = {}
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
                         if use_subfinder:
                             futures[ex.submit(subdomain_scanner._run_subfinder, target_domain)] = ('subfinder_subdomains', 'Subfinder')
                         if use_amass:
                             futures[ex.submit(subdomain_scanner._run_amass, target_domain, None, amass_cap)] = ('amass_subdomains', 'Amass')
                         if enable_ct:
                             futures[ex.submit(_fetch_ct)] = ('ct_logs_subdomains', 'CT Logs')
+                        if enable_chaos:
+                            if not getattr(subdomain_scanner, 'chaos_api_key', ''):
+                                st.caption("⚠️ Chaos enabled but no API key — set it above or via CHAOS_API_KEY env")
+                            else:
+                                futures[ex.submit(_fetch_chaos)] = ('chaos_subdomains', 'Chaos')
 
                         done = 0
                         for fut in concurrent.futures.as_completed(futures):
@@ -531,7 +554,8 @@ with tab1:
         # Display results
         st.markdown("---")
         for key, label in [('subfinder_subdomains', 'Subfinder'), ('amass_subdomains', 'Amass'),
-                           ('ct_logs_subdomains', 'CT Logs'), ('resolved_subdomains', 'Resolved DNS'),
+                           ('ct_logs_subdomains', 'CT Logs'), ('chaos_subdomains', 'Chaos'),
+                           ('resolved_subdomains', 'Resolved DNS'),
                            ('live_hosts', 'Live Hosts')]:
             df = project_manager.load_scan_results(key, target_domain)
             if isinstance(df, pd.DataFrame) and not df.empty:
@@ -2361,6 +2385,93 @@ with tab8:
         with st.expander(f"📦 Stored GraphQL Schemas ({len(gql_schema_stored)})"):
             for _, r in gql_schema_stored.iterrows():
                 st.markdown(f"- `{r.get('endpoint', '')}` ({len(str(r.get('schema', '')))} bytes)")
+
+    # API Docs Mapper — shadow API / OpenAPI recon feeder
+    st.markdown("---")
+    st.markdown("### 📑 API Docs Mapper")
+    st.caption("Probes live hosts for exposed OpenAPI/Swagger/Redoc docs and live GraphQL endpoints "
+               "(`openapi.json`, `swagger.json`, `/v3/api-docs`, `/swagger-ui.html` …). "
+               "Feeds discovered endpoints into the Vulnerability Scanner — does not auto-report the doc itself.")
+    api_docs_stored = project_manager.load_scan_results('api_docs', target_domain)
+    if isinstance(api_docs_stored, pd.DataFrame) and not api_docs_stored.empty:
+        with st.expander(f"Stored API Docs ({len(api_docs_stored)})"):
+            st.dataframe(_arrow_safe(api_docs_stored), width='stretch')
+            # quick feeder preview
+            if 'endpoints' in api_docs_stored.columns:
+                try:
+                    all_eps = []
+                    for _, r in api_docs_stored.iterrows():
+                        eps = r.get('endpoints')
+                        if isinstance(eps, str):
+                            eps = json.loads(eps)
+                        if isinstance(eps, list):
+                            all_eps.extend(eps)
+                    if all_eps:
+                        st.caption(f"{len(all_eps)} endpoints inventoried — {sum(1 for e in all_eps if not e.get('requires_auth'))} unauth, "
+                                   f"{sum(1 for e in all_eps if e.get('interesting'))} interesting")
+                except Exception:
+                    pass
+    # Build host list for probing (bases from live_hosts)
+    _api_live = project_manager.load_scan_results('live_hosts', target_domain)
+    _api_hosts: list[str] = []
+    if isinstance(_api_live, pd.DataFrame) and 'URL' in _api_live.columns:
+        for u in _api_live['URL'].tolist():
+            try:
+                _p = urlparse(u)
+                h = _p.netloc
+                if h and h not in _api_hosts:
+                    _api_hosts.append(h)
+            except Exception:
+                continue
+    _api_hosts = project_manager.filter_targets_by_scope(_api_hosts) if _api_hosts else [target_domain]
+    st.caption(f"{len(_api_hosts)} host(s) queued for API docs probing.")
+    if st.button("📑 Run API Docs Mapper", key="run_api_docs"):
+        if not _api_hosts:
+            st.warning("No live hosts — run subdomain scan first.")
+        else:
+            with st.spinner("Mapping API docs..."):
+                try:
+                    import asyncio as _asyncio
+                    _api_res = _asyncio.run(api_docs_mapper.scan(_api_hosts))
+                    findings = _api_res.get('findings', [])
+                    summary = _api_res.get('summary', {})
+                    if findings:
+                        _df = pd.DataFrame([{
+                            'host': f.get('host',''), 'kind': f.get('kind',''), 'url': f.get('url',''),
+                            'title': f.get('title',''), 'endpoints': json.dumps(f.get('endpoints',[])[:50]),
+                            'endpoint_count': f.get('endpoint_count',0), 'unauth_count': f.get('unauth_count',0),
+                            'interesting_count': f.get('interesting_count',0)
+                        } for f in findings])
+                        project_manager.save_scan_results('api_docs', target_domain, _df)
+                        st.success(f"Found {summary.get('openapi_docs',0)} OpenAPI docs, {summary.get('docs_uis',0)} docs UIs "
+                                   f"— {summary.get('total_endpoints',0)} endpoints inventoried across {summary.get('hosts_probed',0)} hosts.")
+                        st.dataframe(_arrow_safe(_df), width='stretch')
+                        # Auto-feed endpoints into JS-discovered pool for scanner
+                        try:
+                            _eps = []
+                            for f in findings:
+                                for ep in f.get('endpoints',[])[:100]:
+                                    path = ep.get('path','')
+                                    if path.startswith('/'):
+                                        for h in _api_hosts[:5]:
+                                            _eps.append(f"https://{h}{path}")
+                            if _eps:
+                                _eps_df = pd.DataFrame({'endpoint': list(dict.fromkeys(_eps))})
+                                existing = project_manager.load_scan_results('js_discovered_endpoints', target_domain)
+                                if isinstance(existing, pd.DataFrame) and not existing.empty and 'endpoint' in existing.columns:
+                                    _eps_df = pd.concat([existing[['endpoint']], _eps_df], ignore_index=True).drop_duplicates()
+                                project_manager.save_scan_results('js_discovered_endpoints', target_domain, _eps_df)
+                                st.caption(f"↪ Fed {len(_eps)} endpoints into JS-discovered pool for Vulnerability Scanner.")
+                        except Exception as _e:
+                            logger.warning(f"API docs feeder failed: {_e}")
+                    else:
+                        st.info(f"No API docs exposed on {summary.get('hosts_probed',0)} host(s).")
+                        project_manager.save_scan_results('api_docs', target_domain,
+                                                          pd.DataFrame(columns=['host','kind','url','title','endpoints','endpoint_count','unauth_count','interesting_count']),
+                                                          persist_empty=True)
+                except Exception as e:
+                    st.error(f"API docs mapping failed: {e}")
+                    import traceback; st.code(traceback.format_exc())
 
     # IDOR
     st.markdown("---")

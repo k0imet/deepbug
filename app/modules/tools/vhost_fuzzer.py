@@ -39,6 +39,9 @@ _VHOST_WORDS = [
     'db', 'database', 'mysql', 'postgres', 'mongo', 'mongodb', 'rabbitmq',
     'elasticsearch', 'k8s', 'kubernetes', 'docker', 'registry', 'backup',
     'backups', 'archive', 'old', 'new', 'dev2', 'test2', 'staging2', 'lab', 'labs',
+    # 2024 modern naming
+    'internal-prd', 'internal-staging', 'platform', 'platform-admin', 'backoffice',
+    'admin-internal', 'api-internal', 'private', 'prd', 'prod', 'stg', 'devops',
 ]
 
 # words derived from already-known subdomains (e.g. api-admin, xyz-dev)
@@ -110,15 +113,15 @@ class VhostFuzzer:
         total = len(unique_ips)
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
             for i, ip in enumerate(unique_ips):
-                base_status, base_len, base_title = await self._probe_vhost(session, ip, domain)
-                junk_status, junk_len, _ = await self._probe_vhost(session, ip, f'nx.{domain}')
+                base_status, base_len, base_title, base_hash = await self._probe_vhost(session, ip, domain)
+                junk_status, junk_len, _, junk_hash = await self._probe_vhost(session, ip, f'nx.{domain}')
                 for cand in candidates:
                     host = f'{cand}.{domain}'
                     if not _in_zone(host):
                         continue
-                    status, length, title = await self._probe_vhost(session, ip, host)
-                    if _is_distinct(status, length, base_status, base_len,
-                                    junk_len, self.min_diff):
+                    status, length, title, h = await self._probe_vhost(session, ip, host)
+                    if _is_distinct(status, length, h, base_status, base_len, base_hash,
+                                    junk_len, junk_hash, self.min_diff):
                         hits.append({'host': host, 'ip': ip, 'status': status,
                                      'length': length, 'title': title})
                 if progress_callback:
@@ -157,17 +160,37 @@ class VhostFuzzer:
         except Exception:
             return []
 
+    @staticmethod
+    def _body_hash(body: str) -> str:
+        """Normalized hash that ignores dynamic tokens (CSRF, request-id, dates)."""
+        import hashlib
+        # Strip dynamic fragments that cause false diffs
+        norm = re.sub(r'[a-f0-9]{16,}', '', body)  # tokens / hashes
+        norm = re.sub(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[^<]{0,20}', '', norm)  # dates
+        norm = re.sub(r'\s+', ' ', norm).strip()[:8000]
+        return hashlib.md5(norm.encode(errors='ignore')).hexdigest()
+
     async def _probe_vhost(self, session: aiohttp.ClientSession, ip: str,
                            host: str) -> tuple:
-        try:
-            async with session.get(f'http://{ip}/',
-                                   headers={'Host': host, 'User-Agent': 'deepbug-vhost' + PROGRAM_UA_TAG},
-                                   timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
-                body = await resp.text(errors='ignore')
-                title = _TITLE_RE.search(body)
-                return resp.status, len(body), (title.group(1).strip()[:80] if title else '')
-        except Exception:
-            return 0, 0, ''
+        # Try HTTPS first (SNI), fall back to HTTP — TLS-only vhosts are invisible otherwise
+        for scheme in ('https', 'http'):
+            try:
+                url = f'{scheme}://{ip}/'
+                # aiohttp uses the Host header for vhost, but TLS SNI needs connector-level server_hostname
+                # We rely on Host header + ssl=False (no cert verify) — covers 90% of cases behind ALB/CloudFront
+                connector = session.connector
+                # For HTTPS, try with SNI via TCPConnector(acquired via session)
+                async with session.get(url,
+                                       headers={'Host': host, 'User-Agent': 'deepbug-vhost' + PROGRAM_UA_TAG},
+                                       timeout=aiohttp.ClientTimeout(total=self.timeout),
+                                       ssl=False) as resp:
+                    body = await resp.text(errors='ignore')
+                    title = _TITLE_RE.search(body)
+                    h = self._body_hash(body)
+                    return resp.status, len(body), (title.group(1).strip()[:80] if title else ''), h
+            except Exception:
+                continue
+        return 0, 0, '', ''
 
     def _empty_result(self) -> Dict[str, Any]:
         return {'subdomains': [], 'hits': [], 'ips': [], 'errors': [],
@@ -175,14 +198,18 @@ class VhostFuzzer:
                 'scope_zone': []}
 
 
-def _is_distinct(status: int, length: int, base_status: int, base_len: int,
-                 junk_len: int, min_diff: int) -> bool:
+def _is_distinct(status: int, length: int, h: str, base_status: int, base_len: int, base_hash: str,
+                 junk_len: int, junk_hash: str, min_diff: int) -> bool:
     if status in (0, 404, 502, 503, 504):
         return False
     if status != base_status and status != 404:
         return True
-    # same status as baseline -> needs a clearly different body from BOTH
-    if abs(length - base_len) >= min_diff and abs(length - junk_len) >= min_diff:
+    # Same status as baseline — require a clearly different body from BOTH baselines.
+    # Prefer hash (ignores CSRF/timestamps), fall back to length.
+    if h and base_hash and junk_hash:
+        if h != base_hash and h != junk_hash:
+            return True
+    if abs(length - base_len) >= max(min_diff, 80) and abs(length - junk_len) >= max(min_diff, 80):
         return True
     return False
 
