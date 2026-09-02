@@ -10,16 +10,17 @@ We use this to **encourage collaboration**: every PR should add a line under `##
 ## [Unreleased]
 
 ### Added
-- `vulners_enricher` — tech+version → Vulners CVE enrich (CVSS/EPSS/KEV/exploits), auto-triggered on `webanalyze` + `js_libraries` versions, cached.
-- `js_analyzer` — `interesting_comments` (TODO|FIXME|SECURITY|HACK|BUG) + `emails` harvester (zack0x01 borrow, strict flag).
-- `js_analyzer` — `raw-*` auth header rules (Bearer/Basic/AWS Sig) + `\\u00XX`/`%XX`/HTML-entity decode layer (JSRecon-Buddy borrow).
-- `js_analyzer` — source-map `.map` guessing probe + NPM scoped package regex (`@scope/pkg`).
-
-### Changed
-- `js_analyzer` 3.7 → 3.8 — header `__version__ = "3.8.0"` + `js_vulners_auto`/`js_detect_comments`/`js_detect_emails` flags.
-- `README` — added `Chaos` + `Vulners` to recon stack.
+- Nothing yet — add your PR here.
 
 ---
+
+## [3.8.1] - 2026-09-02
+### Added
+- `js_analyzer` — fully wired `interesting_comments` + `emails` + `raw_auth` harvesters (with `_arrow_safe` DataFrames `js_comments`/`js_emails`/`js_raw_auth`), decode layer (`\u00XX`/`%XX`/HTML) before secret scanning, source-map `.map` guessing + NPM scoped regex.
+- `js_analyzer` — Vulners auto-enrich now live: `js_vulnerable_libs` → `vulners_id`/`vulners_cvss`/`vulners_epss` via `VulnersEnricher.enrich_tech_sync` (cached, 8 libs max).
+
+### Changed
+- Bump `js_analyzer` 3.8.0 → 3.8.1, `VERSION` 3.8.1.
 
 ## [3.8.0] - 2026-09-02
 ### Added

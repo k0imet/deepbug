@@ -32,7 +32,7 @@ NEW in v3.8 (2026 - best-of-breed):
 - Source-map .map guessing probe + NPM scoped package regex
 
 File: app/modules/tools/js_analyzer.py
-__version__ = "3.8.0"
+__version__ = "3.8.1"
 """
 
 import re
@@ -1414,6 +1414,7 @@ class JSAnalyzer:
             'ws_protocol': [], 'service_workers': [], 'push_keys': [],
             'ssrf_candidates': [], 'error_services': [], 'auth_guards': [],
             'taint': [],
+            'comments': [], 'emails': [], 'raw_auth': [],
         }
 
         js_urls = list(dict.fromkeys(js_urls))
@@ -1533,7 +1534,8 @@ class JSAnalyzer:
                 # feeder rows are added separately by _extend_feeder_findings.
                 results['nextjs_artifacts'].extend(per.get('nextjs') or [])
                 for _pk in ('ws_protocol', 'service_workers', 'push_keys',
-                            'ssrf_candidates', 'error_services', 'auth_guards', 'taint'):
+                            'ssrf_candidates', 'error_services', 'auth_guards', 'taint',
+                            'comments', 'emails', 'raw_auth'):
                     results[_pk].extend(per.get(_pk, []))
                 if progress_callback and ((idx + 1) % 5 == 0 or idx + 1 == total_files):
                     _emit((idx + 1) / total_files,
@@ -2421,6 +2423,48 @@ class JSAnalyzer:
                     })
         return findings
 
+    def _detect_comments(self, content: str, source_url: str, line_index: List[int]) -> List[Dict]:
+        findings = []
+        for m in self._capped_finditer(COMMENT_PATTERN, content):
+            findings.append({
+                'type': 'interesting_comment',
+                'value': m.group(0)[:300],
+                'line': self._line_of(line_index, m.start()),
+                'source': source_url,
+                'severity': 'INFO',
+            })
+        return findings
+
+    def _detect_emails(self, content: str, source_url: str, line_index: List[int]) -> List[Dict]:
+        findings, seen = [], set()
+        for m in self._capped_finditer(EMAIL_PATTERN, content):
+            email = m.group(0)
+            if email.lower() in seen or 'example.com' in email.lower():
+                continue
+            seen.add(email.lower())
+            findings.append({
+                'type': 'email',
+                'value': email[:200],
+                'line': self._line_of(line_index, m.start()),
+                'source': source_url,
+                'severity': 'INFO',
+            })
+        return findings
+
+    def _detect_raw_auth(self, content: str, source_url: str, line_index: List[int]) -> List[Dict]:
+        findings = []
+        for pat, name in RAW_AUTH_PATTERNS:
+            for m in self._capped_finditer(pat, content):
+                findings.append({
+                    'type': 'raw_auth_header',
+                    'value': m.group(1)[:200] if m.groups() else m.group(0)[:200],
+                    'pattern': name,
+                    'line': self._line_of(line_index, m.start()),
+                    'source': source_url,
+                    'severity': 'MEDIUM',
+                })
+        return findings
+
     @staticmethod
     def identify_vendor_lib(url: str, content: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
@@ -2455,7 +2499,7 @@ class JSAnalyzer:
                'routes': [], 'nonprod': [], 'jwts': [],
                'ws_protocol': [], 'service_workers': [], 'push_keys': [],
                'ssrf_candidates': [], 'error_services': [], 'auth_guards': [], 'taint': [],
-               'nextjs': [],
+               'nextjs': [], 'comments': [], 'emails': [], 'raw_auth': [],
                'vite_manifests': set(),
                'file': {'url': url, 'size': len(js_content),
                         'size_human': self._human_readable_size(len(js_content))}}
@@ -2580,6 +2624,8 @@ class JSAnalyzer:
 
         # Pattern detectors scan a capped window with a shared line index.
         scan = js_content[:self.scan_max_bytes]
+        # v3.8 decode layer (Buddy borrow) — handle \\u00XX / %XX / HTML entities before scanning
+        scan = _decode_js_content(scan)
         line_index = self._line_index(scan)
 
         out['secrets'] = self._extract_secrets(scan, source_url=url)
@@ -2620,6 +2666,12 @@ class JSAnalyzer:
             out['taint'] = []
         out['nextjs'] = out['nextjs'] + self._detect_nextjs_artifacts(
             scan, url, is_source_map_source=is_map_source)
+        # v3.8: interesting comments + emails + raw auth headers (with decode layer already applied to scan)
+        if self.detect_comments:
+            out['comments'] = self._detect_comments(scan, url, line_index)
+        if self.detect_emails:
+            out['emails'] = self._detect_emails(scan, url, line_index)
+        out['raw_auth'] = self._detect_raw_auth(scan, url, line_index)
         return out
 
     def _detect_nextjs_artifacts(self, content: str, source_url: str,
@@ -2947,7 +2999,23 @@ class JSAnalyzer:
         jwts_df = pd.DataFrame(results.get('jwts', []))
         vuln_libs = (self._check_vulnerable_libraries(results.get('libraries', []))
                      if self.check_vuln_libs else [])
+        # v3.8 Vulners auto-enrich (tech+version -> CVE) — cached, no logging of key
+        if self._vulners_enricher and vuln_libs:
+            try:
+                for lib in vuln_libs[:8]:
+                    docs = self._vulners_enricher.enrich_tech_sync(lib['library'], lib['version'], size=2)
+                    for doc in docs[:1]:
+                        lib['vulners_id'] = doc.get('id','')
+                        lib['vulners_cvss'] = (doc.get('cvss3') or doc.get('cvss') or {}).get('score','')
+                        _epss = doc.get('epss')
+                        if isinstance(_epss, list) and _epss:
+                            lib['vulners_epss'] = _epss[0].get('epss','')
+            except Exception as e:
+                logger.debug(f"vulners enrich failed: {e}")
         vuln_libs_df = pd.DataFrame(vuln_libs)
+        comments_df = pd.DataFrame(results.get('comments', []))
+        emails_df = pd.DataFrame(results.get('emails', []))
+        raw_auth_df = pd.DataFrame(results.get('raw_auth', []))
 
         # v3.3: coverage report - every fetch outcome, no silent drops
         coverage_df = pd.DataFrame(results.get('coverage', []))
@@ -3023,6 +3091,9 @@ class JSAnalyzer:
             'js_nonprod_hosts': nonprod_df,
             'js_jwts': jwts_df,
             'js_vulnerable_libs': vuln_libs_df,
+            'js_comments': comments_df,
+            'js_emails': emails_df,
+            'js_raw_auth': raw_auth_df,
             'js_coverage': coverage_df,
             'js_oauth_clients': oauth_df,
             'js_jwt_correlation': jwt_rel_df,
@@ -3120,7 +3191,10 @@ class JSAnalyzer:
             'js_spa_routes': pd.DataFrame(columns=['type', 'route', 'interesting', 'source', 'severity', 'note']),
             'js_nonprod_hosts': pd.DataFrame(columns=['type', 'indicator', 'host', 'source', 'severity', 'note']),
             'js_jwts': pd.DataFrame(columns=['type', 'token_preview', 'alg', 'payload_keys', 'notes', 'source', 'severity']),
-            'js_vulnerable_libs': pd.DataFrame(columns=['type', 'library', 'version', 'cve', 'severity', 'source']),
+            'js_vulnerable_libs': pd.DataFrame(columns=['type', 'library', 'version', 'cve', 'severity', 'source', 'vulners_id', 'vulners_cvss', 'vulners_epss']),
+            'js_comments': pd.DataFrame(columns=['type', 'value', 'line', 'source', 'severity']),
+            'js_emails': pd.DataFrame(columns=['type', 'value', 'line', 'source', 'severity']),
+            'js_raw_auth': pd.DataFrame(columns=['type', 'value', 'pattern', 'line', 'source', 'severity']),
             'js_coverage': pd.DataFrame(columns=['url', 'kind', 'outcome', 'status', 'size', 'ms', 'note']),
             'js_oauth_clients': pd.DataFrame(columns=[
                 'host', 'endpoint', 'method', 'grant_type', 'client_id',
