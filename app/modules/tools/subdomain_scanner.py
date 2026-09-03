@@ -104,6 +104,15 @@ class SubdomainScanner:
         scope_rules = config.get('scope', {}).get('subdomains', [])
         self.scope_validator = ScopeValidator(scope_rules)
 
+        # Chaos dataset (ProjectDiscovery) — optional, keyed via config or env
+        self.chaos_api_key = (
+            config.get('tools', {}).get('chaos_api_key')
+            or config.get('chaos_api_key')
+            or os.environ.get('CHAOS_API_KEY')
+            or os.environ.get('PDCP_API_KEY')
+            or ""
+        ).strip()
+
         # Wildcard detection cache
         self._wildcard_ips: Dict[str, str] = {}
 
@@ -312,6 +321,55 @@ class SubdomainScanner:
         finally:
             if temp_file and Path(temp_file).exists():
                 Path(temp_file).unlink()
+
+    # ------------------------------------------------------------------
+    # Chaos Dataset (ProjectDiscovery) — https://chaos.projectdiscovery.io
+    # ------------------------------------------------------------------
+    async def _fetch_chaos(self, domain: str) -> List[str]:
+        """
+        Fetch subdomains from ProjectDiscovery Chaos dataset.
+        Requires API key via config tools.chaos_api_key or env CHAOS_API_KEY / PDCP_API_KEY.
+        Endpoint: https://dns.projectdiscovery.io/dns/<domain>/subdomains
+        """
+        if not self.chaos_api_key:
+            logger.debug("Chaos API key not configured — skipping.")
+            return []
+        url = f"https://dns.projectdiscovery.io/dns/{domain}/subdomains"
+        headers = {"Authorization": self.chaos_api_key}
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        subs = data.get("subdomains") or data.get("data") or []
+                        if isinstance(subs, dict):
+                            subs = subs.get("subdomains", [])
+                        results: List[str] = []
+                        for sub in subs:
+                            sub = str(sub).strip().lower().rstrip(".")
+                            if not sub:
+                                continue
+                            # Chaos may return bare labels or FQDNs
+                            if not sub.endswith(domain):
+                                # bare label like "admin" -> "admin.example.com"
+                                if "." not in sub:
+                                    sub = f"{sub}.{domain}"
+                                else:
+                                    # already FQDN for another domain, skip if not suffix
+                                    if not sub.endswith("." + domain):
+                                        continue
+                            results.append(sub)
+                        logger.info(f"Chaos found {len(results)} subdomains for {domain}")
+                        return results
+                    elif resp.status == 401:
+                        logger.warning("Chaos API: unauthorized — check your API key.")
+                    elif resp.status == 429:
+                        logger.warning("Chaos API: rate limited (429).")
+                    else:
+                        logger.debug(f"Chaos API failed for {domain}: {resp.status} {await resp.text()}")
+        except Exception as e:
+            logger.debug(f"Chaos fetch failed for {domain}: {e}")
+        return []
 
     # ------------------------------------------------------------------
     # Certificate Transparency (CT) Log Enumeration
@@ -811,6 +869,7 @@ class SubdomainScanner:
     async def perform_subdomain_scan_async(self, domain: str, 
                                             progress_callback: Optional[Callable[[float, str], None]] = None,
                                             enable_ct: bool = True,
+                                            enable_chaos: bool = True,
                                             enable_permutation: bool = True,
                                             enable_wildcard_filter: bool = True) -> Dict[str, pd.DataFrame]:
         """
@@ -827,6 +886,7 @@ class SubdomainScanner:
             "subfinder_subdomains": pd.DataFrame(columns=['Subdomain']),
             "amass_subdomains": pd.DataFrame(columns=['Subdomain']),
             "ct_logs_subdomains": pd.DataFrame(columns=['Subdomain']),
+            "chaos_subdomains": pd.DataFrame(columns=['Subdomain']),
             "permutation_subdomains": pd.DataFrame(columns=['Subdomain']),
             "resolved_subdomains": pd.DataFrame(columns=['hostname', 'ip', 'cname']),
             "live_hosts": pd.DataFrame(columns=['URL', 'Input', 'StatusCode', 'Title', 'WebServer', 'ContentLength', 'Technologies']),
@@ -863,6 +923,21 @@ class SubdomainScanner:
                     logger.info(f"CT logs found {len(ct_results)} subdomains")
             except Exception as e:
                 logger.warning(f"CT log enumeration failed: {e}")
+
+        # Phase 2b: Chaos dataset (ProjectDiscovery)
+        if enable_chaos:
+            if progress_callback:
+                progress_callback(0.33, "Fetching Chaos dataset...")
+            try:
+                chaos_results = await self._fetch_chaos(domain)
+                if chaos_results:
+                    chaos_results = self._sanitize_subdomain_list(chaos_results)
+                    chaos_results = self.scope_validator.filter_subdomains(chaos_results)
+                    results["chaos_subdomains"] = pd.DataFrame([{'Subdomain': s} for s in chaos_results])
+                    all_subdomains.update(chaos_results)
+                    logger.info(f"Chaos found {len(chaos_results)} subdomains")
+            except Exception as e:
+                logger.warning(f"Chaos enumeration failed: {e}")
 
         # Phase 3: Apply scope filtering
         all_subdomains = set(self.scope_validator.filter_subdomains(list(all_subdomains)))
@@ -931,6 +1006,7 @@ class SubdomainScanner:
     def perform_subdomain_scan(self, domain: str, 
                                 progress_callback: Optional[Callable[[float, str], None]] = None,
                                 enable_ct: bool = True,
+                                enable_chaos: bool = True,
                                 enable_permutation: bool = True,
                                 enable_wildcard_filter: bool = True) -> Dict[str, pd.DataFrame]:
         """Synchronous wrapper for the async scan."""
@@ -942,6 +1018,6 @@ class SubdomainScanner:
 
         return loop.run_until_complete(
             self.perform_subdomain_scan_async(
-                domain, progress_callback, enable_ct, enable_permutation, enable_wildcard_filter
+                domain, progress_callback, enable_ct, enable_chaos, enable_permutation, enable_wildcard_filter
             )
         )
